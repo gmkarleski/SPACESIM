@@ -1798,7 +1798,6 @@ If a phase's validation milestone or deliverables are blocked, do not press into
 
 Each question is flagged with the phase by which it must be resolved.
 
-- **Aerodynamic model** (Phase 3): RESOLVED — see commit `025`. Juno-fidelity procedural aero surfaces with calculated lift/drag from surface geometry, locked in `### Atmospheric flight and spaceplane gameplay` in §3. Open-question bullet retained as RESOLVED marker pending migration to `docs/DECISIONS.md` (which will be created as part of operational scaffolding); cleanup commit removes this bullet once DECISIONS.md exists and holds the formal entry.
 - **Vizzy implementation foundation** (Phase 5): xNode (open source, mature) vs Unity Visual Scripting (heavier, integrated) vs custom. Investigate before locking.
 - **Final resource set** (Phase 6): 6-8 listed above is the working set; final names and exotic-matter inclusion not locked.
 - **Anomaly authoring system** (Phase 7): fully procedural vs hand-authored seeds vs hybrid. Likely hybrid; specifics undecided.
