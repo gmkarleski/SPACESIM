@@ -108,6 +108,151 @@ namespace SpaceSim.Foundation.Coordinates.Tests
             Assert.AreEqual(0, _manager.ListenerCount);
         }
 
+        // ----- Deferred listener registration (commit 034) -----
+        //
+        // These tests exercise the static RegisterListenerSafe / UnregisterListenerSafe
+        // facade and the pending-queue lifecycle. Note that the SetUp's AddComponent already
+        // sets _manager but does NOT fire Awake (EditMode constraint), and the singleton
+        // claim (Instance = this) is inside Awake. So at test-body entry, Instance is null
+        // even though _manager exists. Tests that need Instance set explicitly use the
+        // ClearInstanceForTesting + reflection pattern; tests that exercise the queue-while-
+        // null path benefit from the natural EditMode null state.
+
+        [Test]
+        public void RegisterListenerSafe_WhenInstanceNull_QueuesPending()
+        {
+            // Instance is null in EditMode (Awake didn't fire). Safe-register should queue.
+            Assert.IsNull(FloatingOriginManager.Instance,
+                "Sanity: EditMode SetUp does not fire Awake, so Instance should be null.");
+            var listener = new CountingListener();
+            FloatingOriginManager.RegisterListenerSafe(listener);
+            Assert.AreEqual(1, FloatingOriginManager.PendingListenerCount,
+                "Listener should be queued in the static pending list.");
+            Assert.AreEqual(0, _manager.ListenerCount,
+                "Manager's active list should not have the listener yet (Awake didn't fire).");
+        }
+
+        [Test]
+        public void RegisterListenerSafe_WhenInstanceSet_RegistersDirectly()
+        {
+            // Set Instance via reflection (Awake didn't fire in EditMode).
+            SetInstance(_manager);
+            var listener = new CountingListener();
+            FloatingOriginManager.RegisterListenerSafe(listener);
+            Assert.AreEqual(0, FloatingOriginManager.PendingListenerCount,
+                "With Instance set, listener should bypass the queue.");
+            Assert.AreEqual(1, _manager.ListenerCount,
+                "Listener should be in the active list, not the pending queue.");
+        }
+
+        [Test]
+        public void RegisterListenerSafe_Null_IsIgnored()
+        {
+            FloatingOriginManager.RegisterListenerSafe(null);
+            Assert.AreEqual(0, FloatingOriginManager.PendingListenerCount);
+            Assert.AreEqual(0, _manager.ListenerCount);
+        }
+
+        [Test]
+        public void RegisterListenerSafe_DuplicateWhileQueued_DoesNotDouble()
+        {
+            var listener = new CountingListener();
+            FloatingOriginManager.RegisterListenerSafe(listener);
+            FloatingOriginManager.RegisterListenerSafe(listener);
+            Assert.AreEqual(1, FloatingOriginManager.PendingListenerCount,
+                "Duplicate enqueue should be deduplicated at the queue level.");
+        }
+
+        [Test]
+        public void UnregisterListenerSafe_WhenInPendingQueue_RemovesFromQueue()
+        {
+            var listener = new CountingListener();
+            FloatingOriginManager.RegisterListenerSafe(listener);
+            Assert.AreEqual(1, FloatingOriginManager.PendingListenerCount);
+            FloatingOriginManager.UnregisterListenerSafe(listener);
+            Assert.AreEqual(0, FloatingOriginManager.PendingListenerCount,
+                "Listener should be removed from the pending queue.");
+        }
+
+        [Test]
+        public void UnregisterListenerSafe_WhenInActiveList_RemovesFromList()
+        {
+            SetInstance(_manager);
+            var listener = new CountingListener();
+            FloatingOriginManager.RegisterListenerSafe(listener);
+            Assert.AreEqual(1, _manager.ListenerCount);
+            FloatingOriginManager.UnregisterListenerSafe(listener);
+            Assert.AreEqual(0, _manager.ListenerCount,
+                "Listener should be removed from the active list.");
+        }
+
+        [Test]
+        public void UnregisterListenerSafe_Null_IsIgnored()
+        {
+            // Smoke: should not throw.
+            FloatingOriginManager.UnregisterListenerSafe(null);
+            Assert.AreEqual(0, FloatingOriginManager.PendingListenerCount);
+            Assert.AreEqual(0, _manager.ListenerCount);
+        }
+
+        [Test]
+        public void DrainPendingForTesting_MovesQueuedListenersToActive()
+        {
+            // This is the test-only simulation of what Awake does at the end of its body.
+            // Queue two listeners while Instance is null.
+            var listenerA = new CountingListener();
+            var listenerB = new CountingListener();
+            FloatingOriginManager.RegisterListenerSafe(listenerA);
+            FloatingOriginManager.RegisterListenerSafe(listenerB);
+            Assert.AreEqual(2, FloatingOriginManager.PendingListenerCount);
+            Assert.AreEqual(0, _manager.ListenerCount);
+
+            // Set Instance to _manager (simulating Awake claim) and then drain.
+            SetInstance(_manager);
+            FloatingOriginManager_DrainPendingForTesting(_manager);
+
+            Assert.AreEqual(0, FloatingOriginManager.PendingListenerCount,
+                "Pending queue should be empty after drain.");
+            Assert.AreEqual(2, _manager.ListenerCount,
+                "Both listeners should now be in the active list.");
+        }
+
+        [Test]
+        public void DrainPendingForTesting_NullInstance_IsNoOp()
+        {
+            // Smoke: passing null should not throw.
+            FloatingOriginManager_DrainPendingForTesting(null);
+            // No state-change assertions needed; if it didn't throw the test passes.
+        }
+
+        [Test]
+        public void ClearInstanceForTesting_AlsoClearsPendingQueue()
+        {
+            var listener = new CountingListener();
+            FloatingOriginManager.RegisterListenerSafe(listener);
+            Assert.AreEqual(1, FloatingOriginManager.PendingListenerCount,
+                "Setup: listener should be queued.");
+            FloatingOriginManager.ClearInstanceForTesting();
+            Assert.AreEqual(0, FloatingOriginManager.PendingListenerCount,
+                "Pending queue should be cleared by ClearInstanceForTesting.");
+            Assert.IsNull(FloatingOriginManager.Instance);
+        }
+
+        [Test]
+        public void DrainedListener_ReceivesShifts()
+        {
+            // End-to-end EditMode test: queue listener while null, simulate Awake-drain,
+            // shift the origin, verify the drained listener received the shift.
+            var listener = new CountingListener();
+            FloatingOriginManager.RegisterListenerSafe(listener);
+            SetInstance(_manager);
+            FloatingOriginManager_DrainPendingForTesting(_manager);
+
+            _manager.MaybeShiftOrigin(new WorldPosition(60_000.0, 0.0, 0.0));
+            Assert.AreEqual(1, listener.ShiftCount,
+                "Drained listener should have received the shift notification.");
+        }
+
         // ----- Shift logic -----
 
         [Test]
@@ -226,6 +371,34 @@ namespace SpaceSim.Foundation.Coordinates.Tests
         }
 
         // ----- Test helpers -----
+
+        /// <summary>
+        /// Set FloatingOriginManager.Instance via reflection. Awake doesn't fire in EditMode
+        /// so the singleton claim doesn't happen automatically; tests that need Instance set
+        /// use this. The setter is private, so reflection is required.
+        /// </summary>
+        private static void SetInstance(FloatingOriginManager m)
+        {
+            var prop = typeof(FloatingOriginManager).GetProperty(
+                "Instance",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+            var setter = prop.GetSetMethod(nonPublic: true);
+            setter.Invoke(null, new object[] { m });
+        }
+
+        /// <summary>
+        /// Reflection wrapper for the internal <c>DrainPendingForTesting</c> hook. The hook
+        /// is internal so non-test code can't accidentally call it; tests in this assembly
+        /// could access it directly via InternalsVisibleTo, but using reflection here keeps
+        /// the test self-contained and decoupled from assembly-attribute configuration.
+        /// </summary>
+        private static void FloatingOriginManager_DrainPendingForTesting(FloatingOriginManager instance)
+        {
+            var method = typeof(FloatingOriginManager).GetMethod(
+                "DrainPendingForTesting",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            method.Invoke(null, new object[] { instance });
+        }
 
         private class CountingListener : IFloatingOriginListener
         {
