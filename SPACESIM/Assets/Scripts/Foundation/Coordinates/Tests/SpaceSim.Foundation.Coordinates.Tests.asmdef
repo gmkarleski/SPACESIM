@@ -1,0 +1,23 @@
+{
+    "name": "SpaceSim.Foundation.Coordinates.Tests",
+    "rootNamespace": "SpaceSim.Foundation.Coordinates.Tests",
+    "references": [
+        "SpaceSim.Foundation.Coordinates",
+        "Unity.Mathematics",
+        "UnityEngine.TestRunner",
+        "UnityEditor.TestRunner"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
