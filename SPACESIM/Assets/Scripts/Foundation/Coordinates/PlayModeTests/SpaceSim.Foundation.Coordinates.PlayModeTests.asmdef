@@ -1,0 +1,13 @@
+{
+    "name": "SpaceSim.Foundation.Coordinates.PlayModeTests",
+    "rootNamespace": "SpaceSim.Foundation.Coordinates.Tests",
+    "references": [
+        "SpaceSim.Foundation.Coordinates",
+        "Unity.Mathematics"
+    ],
+    "optionalUnityReferences": [
+        "TestAssemblies"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": []
+}

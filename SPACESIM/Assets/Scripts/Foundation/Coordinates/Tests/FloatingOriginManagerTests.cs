@@ -8,10 +8,21 @@ using UnityEngine.TestTools;
 namespace SpaceSim.Foundation.Coordinates.Tests
 {
     /// <summary>
-    /// PlayMode tests for <see cref="FloatingOriginManager"/>. The manager is a MonoBehaviour
-    /// and requires a runtime scene context. Each test creates a fresh GameObject + manager,
-    /// drives <see cref="FloatingOriginManager.MaybeShiftOrigin"/>, and verifies the resulting
-    /// state and listener notifications.
+    /// EditMode tests for <see cref="FloatingOriginManager"/>. Each test creates a fresh
+    /// GameObject + manager component via <c>AddComponent</c>, drives
+    /// <see cref="FloatingOriginManager.MaybeShiftOrigin"/>, and verifies the resulting state
+    /// and listener notifications.
+    ///
+    /// These tests use the local <c>_manager</c> reference rather than reading
+    /// <see cref="FloatingOriginManager.Instance"/> directly. This is deliberate: in EditMode
+    /// tests, MonoBehaviour lifecycle hooks (<c>Awake</c>, <c>Start</c>, <c>OnEnable</c>) do
+    /// NOT fire on <c>AddComponent</c> — the play loop is not running. Reading
+    /// <see cref="FloatingOriginManager.Instance"/> in EditMode would return <c>null</c>
+    /// because the singleton-claim in <c>Awake</c> hasn't executed.
+    ///
+    /// Tests that specifically verify the singleton-Awake lifecycle live in the sibling
+    /// PlayMode asmdef at <c>PlayModeTests/FloatingOriginManagerPlayModeTests.cs</c> using
+    /// <c>[UnityTest] IEnumerator</c> with <c>yield return null</c> to let <c>Awake</c> fire.
     /// </summary>
     public class FloatingOriginManagerTests
     {
@@ -33,27 +44,12 @@ namespace SpaceSim.Foundation.Coordinates.Tests
             FloatingOriginManager.ClearInstanceForTesting();
         }
 
-        // ----- Singleton -----
-
-        [Test]
-        public void Singleton_FirstInstance_BecomesInstance()
-        {
-            Assert.AreEqual(_manager, FloatingOriginManager.Instance);
-        }
-
-        [Test]
-        public void Singleton_DuplicateInstance_LogsErrorAndDestroys()
-        {
-            // Adding a second manager component on a new GameObject should produce an error
-            // log and the duplicate component should be destroyed.
-            LogAssert.Expect(LogType.Error, new System.Text.RegularExpressions.Regex(".*Duplicate FloatingOriginManager.*"));
-            var dupGo = new GameObject("DuplicateManagerGo");
-            var dup = dupGo.AddComponent<FloatingOriginManager>();
-            // The duplicate self-destructs in Awake; its reference may persist briefly until
-            // the GameObject is destroyed. Singleton stays as the original.
-            Assert.AreEqual(_manager, FloatingOriginManager.Instance);
-            if (dupGo != null) Object.DestroyImmediate(dupGo);
-        }
+        // ----- Singleton lifecycle tests moved to PlayMode -----
+        //
+        // The two singleton-lifecycle tests (Singleton_FirstInstance_BecomesInstance and
+        // Singleton_DuplicateInstance_LogsErrorAndDestroys) require Awake to fire on the
+        // manager component, which only happens in PlayMode. See the sibling PlayMode test
+        // file at PlayModeTests/FloatingOriginManagerPlayModeTests.cs.
 
         // ----- Initial state -----
 
