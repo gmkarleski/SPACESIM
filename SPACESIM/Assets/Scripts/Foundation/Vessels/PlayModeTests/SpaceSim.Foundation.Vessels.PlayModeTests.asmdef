@@ -1,0 +1,15 @@
+{
+    "name": "SpaceSim.Foundation.Vessels.PlayModeTests",
+    "rootNamespace": "SpaceSim.Foundation.Vessels.Tests",
+    "references": [
+        "SpaceSim.Foundation.Vessels",
+        "SpaceSim.Foundation.Coordinates",
+        "SpaceSim.Foundation.SimTick",
+        "Unity.Mathematics"
+    ],
+    "optionalUnityReferences": [
+        "TestAssemblies"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": []
+}

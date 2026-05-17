@@ -3,6 +3,11 @@ using SpaceSim.Foundation.Coordinates;
 using SpaceSim.Foundation.SimTick;
 using UnityEngine;
 using UnityEngine.TestTools;
+// Alias UnityEngine.Object to disambiguate from System.Object. Tests use
+// UnityObject.DestroyImmediate for GameObject cleanup; bare 'Object' is ambiguous when
+// both 'using System' (transitive via test framework usings) and 'using UnityEngine'
+// could be in scope.
+using UnityObject = UnityEngine.Object;
 
 namespace SpaceSim.Foundation.SimTick.Tests
 {
@@ -228,33 +233,62 @@ namespace SpaceSim.Foundation.SimTick.Tests
         }
 
         [Test]
-        public void Step6_WithFloatingOriginManager_BelowThreshold_DoesNotShift()
+        public void Step6_WithoutActiveVessel_LogsWarningOnce()
         {
+            // FloatingOriginManager present so that branch passes; ActiveVessel left null.
             var managerGo = new GameObject("TestFloatingOriginManager");
             var manager = managerGo.AddComponent<FloatingOriginManager>();
-            // Manually set Instance because Awake doesn't fire in EditMode.
             SetFloatingOriginManagerInstance(manager);
 
-            _controller.SetActiveVesselWorldPosition(new WorldPosition(40_000.0, 0.0, 0.0));
+            LogAssert.Expect(LogType.Warning,
+                new System.Text.RegularExpressions.Regex(".*ActiveVessel is null.*"));
+            _controller.RunFixedUpdateCycle(1);
+            // Second cycle: warning should NOT re-fire (once-per-controller-lifetime).
             _controller.RunFixedUpdateCycle(1);
 
-            Assert.AreEqual(0, manager.ShiftCount, "Below threshold; no shift expected.");
-            Object.DestroyImmediate(managerGo);
+            Assert.AreEqual(0, manager.ShiftCount, "No shift expected when ActiveVessel is null.");
+            UnityObject.DestroyImmediate(managerGo);
         }
 
         [Test]
-        public void Step6_WithFloatingOriginManager_AboveThreshold_DoesShift()
+        public void Step6_WithActiveVessel_BelowThreshold_DoesNotShift()
         {
             var managerGo = new GameObject("TestFloatingOriginManager");
             var manager = managerGo.AddComponent<FloatingOriginManager>();
             SetFloatingOriginManagerInstance(manager);
 
-            _controller.SetActiveVesselWorldPosition(new WorldPosition(60_000.0, 0.0, 0.0));
+            // POCO stub implementing IActiveVessel. No GameObject / Rigidbody scaffolding
+            // needed because the interface contract is narrow (position + mode).
+            var vessel = new ActiveVesselStub
+            {
+                Position = new WorldPosition(40_000.0, 0.0, 0.0),
+                ModeValue = PhysicsMode.PhysXActive,
+            };
+            _controller.SetActiveVessel(vessel);
+            _controller.RunFixedUpdateCycle(1);
+
+            Assert.AreEqual(0, manager.ShiftCount, "Below threshold; no shift expected.");
+            UnityObject.DestroyImmediate(managerGo);
+        }
+
+        [Test]
+        public void Step6_WithActiveVessel_AboveThreshold_DoesShift()
+        {
+            var managerGo = new GameObject("TestFloatingOriginManager");
+            var manager = managerGo.AddComponent<FloatingOriginManager>();
+            SetFloatingOriginManagerInstance(manager);
+
+            var vessel = new ActiveVesselStub
+            {
+                Position = new WorldPosition(60_000.0, 0.0, 0.0),
+                ModeValue = PhysicsMode.PhysXActive,
+            };
+            _controller.SetActiveVessel(vessel);
             _controller.RunFixedUpdateCycle(1);
 
             Assert.AreEqual(1, manager.ShiftCount, "Above 50km threshold; one shift expected.");
             Assert.AreEqual(new WorldPosition(60_000.0, 0.0, 0.0), manager.CurrentOrigin);
-            Object.DestroyImmediate(managerGo);
+            UnityObject.DestroyImmediate(managerGo);
         }
 
         [Test]
@@ -270,14 +304,85 @@ namespace SpaceSim.Foundation.SimTick.Tests
             var manager = managerGo.AddComponent<FloatingOriginManager>();
             SetFloatingOriginManagerInstance(manager);
 
-            _controller.SetActiveVesselWorldPosition(new WorldPosition(60_000.0, 0.0, 0.0));
+            var vessel = new ActiveVesselStub
+            {
+                Position = new WorldPosition(60_000.0, 0.0, 0.0),
+                ModeValue = PhysicsMode.PhysXActive,
+            };
+            _controller.SetActiveVessel(vessel);
             _controller.RunFixedUpdateCycle(100);
 
             Assert.AreEqual(1, manager.ShiftCount,
                 "Step 6 runs once per FixedUpdate (gated by i == 0), not per analytic iteration.");
             Assert.AreEqual(100L, _controller.TickNumber,
                 "Tick counter still advances by analyticIterations (100), separate from step 6's cadence.");
-            Object.DestroyImmediate(managerGo);
+            UnityObject.DestroyImmediate(managerGo);
+        }
+
+        // ----- SetActiveVessel: warp-mode tracking -----
+
+        [Test]
+        public void SetActiveVessel_WithPhysXActive_SetsWarpModeToPhysXActive()
+        {
+            // Pre-set warp to KeplerRails so we can detect the assignment back to PhysXActive.
+            _controller.Warp.SetActiveVesselMode(PhysicsMode.KeplerRails);
+            Assert.AreEqual(PhysicsMode.KeplerRails, _controller.Warp.ActiveVesselMode);
+
+            var vessel = new ActiveVesselStub { ModeValue = PhysicsMode.PhysXActive };
+            _controller.SetActiveVessel(vessel);
+
+            Assert.AreEqual(PhysicsMode.PhysXActive, _controller.Warp.ActiveVesselMode,
+                "SetActiveVessel should propagate vessel.Mode to Warp.SetActiveVesselMode.");
+        }
+
+        [Test]
+        public void SetActiveVessel_WithKeplerRails_SetsWarpModeToKeplerRails()
+        {
+            var vessel = new ActiveVesselStub { ModeValue = PhysicsMode.KeplerRails };
+            _controller.SetActiveVessel(vessel);
+
+            Assert.AreEqual(PhysicsMode.KeplerRails, _controller.Warp.ActiveVesselMode);
+        }
+
+        [Test]
+        public void SetActiveVessel_Null_ResetsWarpModeToPhysXActive()
+        {
+            // First put warp in KeplerRails via a vessel.
+            _controller.SetActiveVessel(new ActiveVesselStub { ModeValue = PhysicsMode.KeplerRails });
+            Assert.AreEqual(PhysicsMode.KeplerRails, _controller.Warp.ActiveVesselMode);
+
+            // Now clear ActiveVessel. Warp should reset to PhysXActive (most-restrictive default).
+            _controller.SetActiveVessel(null);
+
+            Assert.IsNull(_controller.ActiveVessel);
+            Assert.AreEqual(PhysicsMode.PhysXActive, _controller.Warp.ActiveVesselMode,
+                "SetActiveVessel(null) should reset warp to PhysXActive (most-restrictive default).");
+        }
+
+        [Test]
+        public void Step6_WhenVesselModeChanges_WarpModeTracksOnNextTick()
+        {
+            // Set up active vessel in PhysXActive mode.
+            var managerGo = new GameObject("TestFloatingOriginManager");
+            var manager = managerGo.AddComponent<FloatingOriginManager>();
+            SetFloatingOriginManagerInstance(manager);
+            var vessel = new ActiveVesselStub
+            {
+                Position = new WorldPosition(10_000.0, 0.0, 0.0),
+                ModeValue = PhysicsMode.PhysXActive,
+            };
+            _controller.SetActiveVessel(vessel);
+            Assert.AreEqual(PhysicsMode.PhysXActive, _controller.Warp.ActiveVesselMode);
+
+            // Vessel's mode changes (simulating an in-play transition). Without calling
+            // SetActiveVessel again, the warp controller's mode should still track on the
+            // next FixedUpdate via step 6's per-tick assignment.
+            vessel.ModeValue = PhysicsMode.KeplerRails;
+            _controller.RunFixedUpdateCycle(1);
+
+            Assert.AreEqual(PhysicsMode.KeplerRails, _controller.Warp.ActiveVesselMode,
+                "Step 6 should pick up vessel.Mode changes on each FixedUpdate without an explicit SetActiveVessel re-call.");
+            UnityObject.DestroyImmediate(managerGo);
         }
 
         // ----- Test helpers -----
@@ -295,6 +400,24 @@ namespace SpaceSim.Foundation.SimTick.Tests
             // Instance has a private setter; use reflection to bypass.
             var setter = prop.GetSetMethod(nonPublic: true);
             setter.Invoke(null, new object[] { m });
+        }
+
+        /// <summary>
+        /// POCO test double implementing <see cref="IActiveVessel"/>. Step-6 tests use this
+        /// instead of constructing a real <c>Vessel</c> with GameObject + Rigidbody +
+        /// ReferenceBody scaffolding. The interface contract is narrow (position + mode),
+        /// so a two-field stub satisfies it.
+        ///
+        /// This is exactly the testability payoff of the IActiveVessel interface (per
+        /// commit 038 design discussion): tests can stub the contract without the full
+        /// component-chain assembly.
+        /// </summary>
+        private class ActiveVesselStub : IActiveVessel
+        {
+            public WorldPosition Position;
+            public PhysicsMode ModeValue;
+            public WorldPosition GetWorldPosition() => Position;
+            public PhysicsMode Mode => ModeValue;
         }
 
         private class CountingTickListener : ISimTickListener

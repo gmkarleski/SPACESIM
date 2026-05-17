@@ -1,0 +1,25 @@
+{
+    "name": "SpaceSim.Foundation.Vessels.Tests",
+    "rootNamespace": "SpaceSim.Foundation.Vessels.Tests",
+    "references": [
+        "SpaceSim.Foundation.Vessels",
+        "SpaceSim.Foundation.Coordinates",
+        "SpaceSim.Foundation.SimTick",
+        "Unity.Mathematics",
+        "UnityEngine.TestRunner",
+        "UnityEditor.TestRunner"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

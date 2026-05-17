@@ -70,14 +70,21 @@ namespace SpaceSim.Foundation.SimTick
 
         // ----- Step 6 (mode transitions / floating-origin shift) state -----
 
-        // The active-vessel world position is supplied externally via
-        // SetActiveVesselWorldPosition. In the prototype test scene (commit 033),
-        // TestShiftDriver pushes this each frame. In the production architecture
-        // (commit 035+ when vessel containers exist), the vessel registry will be the
-        // source of truth and this prototype-bridge API will be removed.
-        private WorldPosition _activeVesselWorldPosition = WorldPosition.Zero;
-        private bool _activeVesselPositionSet;
+        /// <summary>
+        /// The active vessel — the one whose position drives floating-origin shift
+        /// detection and whose mode drives warp-ceiling selection. Step 6 reads
+        /// <c>ActiveVessel.GetWorldPosition()</c> and <c>ActiveVessel.Mode</c> on every
+        /// FixedUpdate.
+        ///
+        /// Null is valid and means "no active vessel" — step 6 logs a warning once per
+        /// controller lifetime and skips shift detection. Tests set this via
+        /// <see cref="SetActiveVessel"/> with either a real <c>Vessel</c> or an
+        /// <see cref="IActiveVessel"/> POCO test double.
+        /// </summary>
+        public IActiveVessel ActiveVessel { get; private set; }
+
         private bool _warnedAboutMissingOriginManager;
+        private bool _warnedAboutMissingActiveVessel;
 
         // ----- Listeners -----
 
@@ -138,31 +145,45 @@ namespace SpaceSim.Foundation.SimTick
         /// <summary>Number of currently-registered interface listeners. Exposed for diagnostics and tests.</summary>
         public int ListenerCount => _listeners.Count;
 
-        // ----- Active-vessel position injection (PROTOTYPE BRIDGE) -----
+        // ----- Active-vessel registration -----
 
         /// <summary>
-        /// PROTOTYPE BRIDGE (commit 033): set the world-space position of the active vessel
-        /// for step 6's floating-origin-shift check.
+        /// Set the active vessel — the one driving step 6's floating-origin shift check
+        /// and the warp-controller's mode tracking.
         ///
-        /// This API exists only because vessel containers (with their own world-position
-        /// authority) don't exist yet. In the prototype test scene, <c>TestShiftDriver</c>
-        /// calls this method every frame with the test-subject GameObject's world
-        /// position, and step 6 reads the latest value during the FixedUpdate cycle.
+        /// Accepts null, which means "no active vessel" — step 6 will warn-once and skip
+        /// shift detection until a non-null vessel is assigned. When called with null,
+        /// the warp controller's active-vessel mode resets to
+        /// <see cref="PhysicsMode.PhysXActive"/> (the most-restrictive default, matching
+        /// <see cref="SimTickWarpController"/>'s construction state).
         ///
-        /// In the production architecture (commit 035+ when vessel containers land), the
-        /// vessel registry will be the source of truth for active-vessel position, and the
-        /// sim-tick controller will read it directly from there. This method will be
-        /// removed in that commit.
+        /// When called with a non-null vessel, the warp controller's mode is updated to
+        /// match the vessel's <see cref="IActiveVessel.Mode"/>. Step 6 also refreshes the
+        /// warp mode on every FixedUpdate (cheap idempotent assignment), so transitions
+        /// during play propagate without an explicit SetActiveVessel re-call.
         ///
-        /// The PROTOTYPE BRIDGE marker is deliberate: it documents the architectural
-        /// lifetime of the API in the code rather than as implicit knowledge that gets lost
-        /// across commits. Future readers see immediately that this is bridge code with a
-        /// scheduled retirement.
+        /// This method replaces the commit-033 <c>SetActiveVesselWorldPosition</c>
+        /// prototype-bridge API. The new design takes a vessel reference rather than a
+        /// raw position because the controller now needs both position and mode, and
+        /// vessel containers (per commit 038) own both pieces of state.
+        ///
+        /// The parameter type is <see cref="IActiveVessel"/>, not the concrete
+        /// <c>Vessel</c> class, to avoid a circular asmdef dependency
+        /// (Vessels → SimTick is the canonical direction; SimTick → Vessels would
+        /// close the cycle). The interface contract is narrow on purpose; see
+        /// <see cref="IActiveVessel"/> for the design rationale.
         /// </summary>
-        public void SetActiveVesselWorldPosition(WorldPosition pos)
+        public void SetActiveVessel(IActiveVessel vessel)
         {
-            _activeVesselWorldPosition = pos;
-            _activeVesselPositionSet = true;
+            ActiveVessel = vessel;
+            if (vessel == null)
+            {
+                Warp.SetActiveVesselMode(PhysicsMode.PhysXActive);
+            }
+            else
+            {
+                Warp.SetActiveVesselMode(vessel.Mode);
+            }
         }
 
         // ----- Test API -----
@@ -288,13 +309,25 @@ namespace SpaceSim.Foundation.SimTick
         private void Step5_ReconcileAuthoritative() { /* TODO: reconciliation logic (commit 036+) */ }
 
         /// <summary>
-        /// Step 6: detect mode transitions for each vessel. In commit 033 (no vessels yet),
-        /// dispatches floating-origin shift check via
-        /// <see cref="FloatingOriginManager.MaybeShiftOrigin"/> using the active-vessel
-        /// position pushed via <see cref="SetActiveVesselWorldPosition"/>.
+        /// Step 6: detect mode transitions for each vessel. In commit 038, two
+        /// responsibilities:
+        ///   1. Dispatch floating-origin shift check via
+        ///      <see cref="FloatingOriginManager.MaybeShiftOrigin"/> using
+        ///      <see cref="ActiveVessel"/>.<see cref="IActiveVessel.GetWorldPosition"/>.
+        ///   2. Keep the warp controller's mode in sync with the active vessel's mode
+        ///      by calling <see cref="SimTickWarpController.SetActiveVesselMode"/> on
+        ///      every FixedUpdate. This is a cheap idempotent assignment that picks up
+        ///      mode transitions during play (PhysX-active ↔ Kepler-rails) without
+        ///      requiring an explicit <see cref="SetActiveVessel"/> re-call from the
+        ///      vessel each time it transitions.
         ///
-        /// If <see cref="FloatingOriginManager.Instance"/> is null, logs a warning once per
-        /// controller lifetime and skips the shift check.
+        /// Two skip conditions, each producing a one-time warning per controller
+        /// lifetime:
+        ///   - <see cref="FloatingOriginManager.Instance"/> is null
+        ///   - <see cref="ActiveVessel"/> is null
+        ///
+        /// Each condition's warning fires once and is suppressed thereafter; the cycle
+        /// continues to run, just without origin-shift detection.
         /// </summary>
         private void Step6_DetectModeTransitions()
         {
@@ -311,15 +344,25 @@ namespace SpaceSim.Foundation.SimTick
                 return;
             }
 
-            if (!_activeVesselPositionSet)
+            if (ActiveVessel == null)
             {
-                // No active-vessel position has been pushed yet; nothing to check. This is
-                // normal in the first few FixedUpdates after scene load before TestShiftDriver
-                // has run its first Update. Subsequent ticks will see the pushed position.
+                if (!_warnedAboutMissingActiveVessel)
+                {
+                    Debug.LogWarning(
+                        "SimTickController.Step6: ActiveVessel is null. " +
+                        "Origin-shift detection skipped. This warning logs once per controller lifetime; " +
+                        "call SetActiveVessel(vessel) to assign an active vessel before expecting origin shifts.");
+                    _warnedAboutMissingActiveVessel = true;
+                }
                 return;
             }
 
-            FloatingOriginManager.Instance.MaybeShiftOrigin(_activeVesselWorldPosition);
+            // Keep warp mode in sync with active vessel's mode every tick. Idempotent;
+            // assignment is cheap. Picks up mode transitions during play without
+            // requiring an explicit SetActiveVessel re-call from the vessel.
+            Warp.SetActiveVesselMode(ActiveVessel.Mode);
+
+            FloatingOriginManager.Instance.MaybeShiftOrigin(ActiveVessel.GetWorldPosition());
         }
 
         /// <summary>

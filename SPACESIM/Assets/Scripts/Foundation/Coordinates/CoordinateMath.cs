@@ -20,6 +20,21 @@ namespace SpaceSim.Foundation.Coordinates
     public static class CoordinateMath
     {
         /// <summary>
+        /// Newton's gravitational constant, m³ / (kg · s²).
+        ///
+        /// Lives here in Phase 0 because there's exactly one physical constant in the codebase
+        /// and a new <c>Foundation/Physics/PhysicsConstants.cs</c> module would be over-engineering
+        /// for one value. When the Physics module lands (post-Phase 0, when atmospheric drag /
+        /// thrust / multi-body gravity all need physical constants), <see cref="G"/> moves there
+        /// alongside its siblings (atmospheric scale heights, atmospheric reference densities,
+        /// the speed of light for interstellar-cruise relativistic corrections, etc.).
+        ///
+        /// Used by <c>SpaceSim.Foundation.Vessels.ReferenceBody.Mu</c> to compute the standard
+        /// gravitational parameter μ = G · M for orbital-element calculations.
+        /// </summary>
+        public const double G = 6.67430e-11;
+
+        /// <summary>
         /// Convert a world-space position to a local-space position, given the current origin.
         ///
         /// The local position may exceed single-precision representable range when the world
