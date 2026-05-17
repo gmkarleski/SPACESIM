@@ -29,6 +29,8 @@ None.
 
 | Commit | What | Date |
 |---|---|---|
+| 037 | Phase 0 artifact list for v1 | 2026-05-17 |
+| 036 | Operational scaffolding (PHASE_TRACKER, DECISIONS, ARCHITECTURE, SESSION_PROTOCOL, companion-doc template) | 2026-05-17 |
 | 035 | Workflow rule 6 formalization (sandbox-mount staleness) | 2026-05-17 |
 | 034 | Deferred listener registration architectural fix | 2026-05-17 |
 | 033 | Sim-tick controller with 10-step cycle spine | 2026-05-17 |
@@ -71,8 +73,8 @@ Items that need to land before Phase 1 implementation can honestly begin:
 - [x] Sim-tick controller implemented and verified (commit 033)
 - [x] Deferred listener registration (commit 034)
 - [x] Workflow rule 6 formalized (commit 035)
-- [x] Operational scaffolding (commit 036, this commit)
-- [ ] Phase 0 artifact list (Tier A/B/C content decisions for v1)
+- [x] Operational scaffolding (commit 036)
+- [x] Phase 0 artifact list (Tier A/B/C content decisions for v1, commit 037)
 - [ ] Vessel containers per netcode contract §2 (next substantial implementation)
 - [ ] At least one Kepler-rails mode test (validates the rails side of the mode boundary)
 - [ ] Mode transition test (PhysX-active ↔ Kepler-rails per netcode contract §3.1)
