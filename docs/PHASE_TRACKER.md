@@ -13,13 +13,13 @@ This document is operational state, not narrative history. It updates with every
 Phase 0 has two halves per `docs/CONSTRAINTS.md` §9:
 
 1. **Design content** — locking the design decisions that gate Phase 1+ implementation. **Status: complete** (commits 001-025).
-2. **Prototype foundation** — written netcode contract plus prototype implementation validating it. **Status: in progress** (commits 026-035 landed; vessel containers and Kepler-rails propagation still to come).
+2. **Prototype foundation** — written netcode contract plus prototype implementation validating it. **Status: in progress** (commits 026-040 landed; mode-transition test still to come).
 
 ## Current milestone
 
-**Operational scaffolding landing.** Commit 036 establishes the navigation and decision-tracking infrastructure that subsequent implementation commits use: PHASE_TRACKER, DECISIONS, ARCHITECTURE, SESSION_PROTOCOL, companion doc template.
+**Kepler-rails propagator landed.** Commit 040 wires `KeplerPropagator` into `Vessel.GetWorldPosition` and `Vessel.TransitionToPhysXActive`, removing the Phase 0 "rewind on re-activation" limitation. Step 4 of the sim-tick cycle stays a stub; propagation is on-demand at query time.
 
-After 036, the prototype implementation work continues with vessel containers per `docs/NETCODE_CONTRACT.md` §2 — the first time the architectural state schema gets implemented in code.
+After 040, Phase 0's prototype implementation has both halves of the mode boundary working: PhysX-active simulation (via Unity's rigidbody) and Kepler-rails analytic propagation (via the propagator), with verified transitions between them. The one remaining Phase 0 item is a comprehensive mode-transition test exercising the §3.1 trigger conditions end-to-end.
 
 ## Active blockers
 
@@ -29,6 +29,7 @@ None.
 
 | Commit | What | Date |
 |---|---|---|
+| 040 | Kepler-rails propagator + Phase 0 rewind limitation removed | 2026-05-18 |
 | 039 | Input System migration + operational doc updates | 2026-05-17 |
 | 038 | Vessel containers + mode transition + TestVessels scene | 2026-05-17 |
 | 037 | Phase 0 artifact list for v1 | 2026-05-17 |
@@ -46,9 +47,9 @@ None.
 
 ## Verification state
 
-**Tests:** 137 EditMode + 6 PlayMode = 143 total, all green (commit 038 baseline; commit 039 adds no new tests). Count corrected during commit 039 pre-replay audit — earlier 146/152 was an estimation error in the commit 039 artifact draft; Unity test runner confirms 137 EditMode.
+**Tests:** 154 EditMode + 6 PlayMode = 160 total, all green (commit 040 baseline). Commit 040 adds 17 new EditMode tests: 15 in `KeplerPropagatorTests` covering propagator math (circular / elliptical / hyperbolic / retrograde orbits, high eccentricity, very-high-eccentricity no-throw, long-interval numerical stability, dt=0 short-circuit, negative-dt backward propagation, elliptical and hyperbolic round-trip preservation, mean-motion period verification, small-dt linearization sanity), plus 2 in `VesselTests` covering propagator integration (`KeplerRails_GetWorldPosition_AdvancesWithSimTick`, `KeplerRails_TransitionToPhysXActive_UsesPropagatedPosition`). Counts cleanly: 137 (commit 038 baseline) + 17 = 154. The earlier "151 projected after Stage 1" reading from the surfacing message was a mis-count of 14 propagator tests when the file actually contained 15; the discrepancy is reconciled in the commit 040 artifact's Lessons section.
 
-**End-to-end Play verification:** TestCoordinates.unity exercises the foundational spine (coordinate system + floating origin + sim-tick controller + deferred listener registration + rigidbody shift) — verified working at commit 034. TestVessels.unity exercises the full vessel-container stack (Vessel + ReferenceBody + TestVesselDriver + mode transitions) — floating-origin shifts verified working in commit 038 end-to-end Play; Space-key mode transitions verified working after commit 039's Input System migration.
+**End-to-end Play verification:** TestCoordinates.unity exercises the foundational spine (coordinate system + floating origin + sim-tick controller + deferred listener registration + rigidbody shift) — verified working at commit 034. TestVessels.unity exercises the full vessel-container stack (Vessel + ReferenceBody + TestVesselDriver + mode transitions) — floating-origin shifts verified working in commit 038 end-to-end Play; Space-key mode transitions verified working after commit 039's Input System migration. Commit 040's propagator integration is covered by EditMode tests (the 16 above); end-to-end Play verification of long Kepler-rails sits with visible orbital motion in TestVessels.unity is deferred to a future verification commit. The math is exercised by 14 unit tests and the wiring by 2 integration tests, which is sufficient for the propagator to claim Phase-0 coverage.
 
 **Git state:** Three commits on `main`, pushed to https://github.com/gmkarleski/SPACESIM.
 
@@ -78,8 +79,8 @@ Items that need to land before Phase 1 implementation can honestly begin:
 - [x] Operational scaffolding (commit 036)
 - [x] Phase 0 artifact list (Tier A/B/C content decisions for v1, commit 037)
 - [x] Vessel containers per netcode contract §2 (commit 038, with Input System migration in commit 039)
-- [ ] At least one Kepler-rails mode test (validates the rails side of the mode boundary)
-- [ ] Mode transition test (PhysX-active ↔ Kepler-rails per netcode contract §3.1)
+- [x] At least one Kepler-rails mode test (commit 040: 15 `KeplerPropagatorTests` covering elliptic / hyperbolic / retrograde / high-eccentricity / round-trip / numerical stability, plus 2 `VesselTests` integration tests verifying GetWorldPosition advances with sim time and TransitionToPhysXActive uses propagated position)
+- [ ] Mode transition test (PhysX-active ↔ Kepler-rails per netcode contract §3.1) — the comprehensive trigger-conditions test is still owed; commit 038's `RoundTrip_PhysXKeplerPhysX_PreservesPositionAndVelocity` and commit 040's two integration tests cover specific paths but not the full §3.1 trigger matrix
 
 Once those land, Phase 0's prototype implementation validates the netcode contract end-to-end and Phase 1 can begin.
 

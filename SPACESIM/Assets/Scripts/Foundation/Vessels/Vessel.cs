@@ -30,15 +30,16 @@ namespace SpaceSim.Foundation.Vessels
     /// Phase 6 per the Phase 0 artifact list (commit 037); transitions to/from
     /// <see cref="PhysicsMode.InterstellarCruise"/> log an error and no-op.
     ///
-    /// PHASE 0 LIMITATION on Kepler-rails:
-    /// The orbital state captured at <see cref="TransitionToKeplerRails"/> is frozen at
-    /// the transition tick. No analytic propagation is yet wired in (Step 4 of the
-    /// sim-tick cycle is still a stub). This means a vessel that transitions to
-    /// Kepler-rails and immediately transitions back to PhysX-active will round-trip
-    /// correctly (the state was just captured and is read back unchanged). A vessel that
-    /// sits on Kepler-rails for any duration and then transitions back will reappear at
-    /// the position it had at the moment of transition, not the propagated current
-    /// position. This limitation is removed when the propagator commit lands.
+    /// KEPLER-RAILS PROPAGATION:
+    /// On <see cref="TransitionToKeplerRails"/>, the vessel's state vector is converted
+    /// to classical orbital elements (a, e, i, Ω, ω, ν₀) at epoch tick. Subsequent
+    /// position queries via <see cref="GetWorldPosition"/> and re-activation via
+    /// <see cref="TransitionToPhysXActive"/> use <see cref="KeplerPropagator"/> to
+    /// advance the true anomaly from ν₀ through Kepler's equation, so the vessel's
+    /// position on rails advances correctly with sim time. The sim-tick cycle's
+    /// step 4 stub does not drive this propagation; computation is on-demand at
+    /// query time. Orientation handling remains a Phase 0 simplification — see the
+    /// inline comment in <see cref="TransitionToPhysXActive"/> for the deferred work.
     /// </summary>
     [DisallowMultipleComponent]
     public sealed class Vessel : MonoBehaviour, IActiveVessel
@@ -268,9 +269,10 @@ namespace SpaceSim.Foundation.Vessels
         /// <summary>
         /// Transition from Kepler-rails to PhysX-active mode per §3.1.
         ///
-        /// Procedure (locked in commit 038):
-        ///   1. From <see cref="VesselAuthoritativeState.KeplerState"/>, compute position +
-        ///      velocity. PHASE 0 LIMITATION: uses epoch-tick state (no propagator yet).
+        /// Procedure (locked in commit 038, propagator wired in commit 040):
+        ///   1. From <see cref="VesselAuthoritativeState.KeplerState"/>, propagate
+        ///      position + velocity from epoch tick to current tick via
+        ///      <see cref="KeplerPropagator.PropagateState"/>.
         ///   2. Add Rigidbody first, then FloatingOriginAnchor (the anchor's Awake caches
         ///      the rigidbody reference; must exist first).
         ///   3. Configure rigidbody: position, velocity, rotation, angular velocity, no gravity.
@@ -312,16 +314,23 @@ namespace SpaceSim.Foundation.Vessels
                 ? SimTickController.Instance.TickNumber
                 : 0L;
 
-            // Step 1: Compute position + velocity from orbital elements.
+            // Step 1: Propagate position + velocity from epoch tick to current tick.
             //
-            // PHASE 0 SIMPLIFICATION: position computed at TrueAnomalyAtEpoch, not
-            // propagated to current tick. Propagator commits later. Round-trip-immediately
-            // works correctly; long Kepler-rails sits will rewind on re-activation. The
-            // ν₀ stored in KeplerState is the value captured at TransitionToKeplerRails;
-            // until a propagator advances it through Kepler's equation as time passes,
-            // re-evaluating ComputeStateVector with the same ν₀ produces the same (r, v).
-            (double3 relPosition, double3 relVelocity) = OrbitalElements.ComputeStateVector(
-                State.KeplerState, State.KeplerState.TrueAnomalyAtEpoch, _referenceBody.Mu);
+            // KeplerPropagator.PropagateState advances the true anomaly from
+            // KeplerState.TrueAnomalyAtEpoch (the ν₀ captured at TransitionToKeplerRails)
+            // through Kepler's equation by (currentTick - EpochTick) * tickIntervalSeconds.
+            // The propagator handles dt == 0 as a short-circuit, so a round-trip-
+            // immediately transition reproduces the entry state exactly.
+            //
+            // The SimTickController instance may be absent in EditMode tests that don't
+            // construct the controller. In that case we fall back to the epoch tick,
+            // which makes the propagator a no-op (dt == 0) and preserves the legacy
+            // behavior for those tests.
+            long propagationTick = SimTickController.Instance != null
+                ? SimTickController.Instance.TickNumber
+                : State.KeplerState.EpochTick;
+            (double3 relPosition, double3 relVelocity) = KeplerPropagator.PropagateState(
+                State.KeplerState, propagationTick, _referenceBody.Mu, SimTickController.SimTickIntervalSeconds);
 
             // Convert relative position back to world position via the reference body.
             double3 absoluteWorld = _referenceBody.PositionWorld.Value + relPosition;
@@ -393,9 +402,12 @@ namespace SpaceSim.Foundation.Vessels
         ///
         /// In PhysX-active mode: reads from the rigidbody position and converts through
         /// the floating-origin manager.
-        /// In Kepler-rails mode: computes position from orbital elements at the
-        /// vessel's current true anomaly (PHASE 0: at TrueAnomalyAtEpoch — propagator
-        /// not yet wired). Adds the reference body's world position.
+        /// In Kepler-rails mode: propagates orbital elements from epoch tick to current
+        /// tick via <see cref="KeplerPropagator.PropagateState"/> and adds the reference
+        /// body's world position. The propagator handles dt == 0 as a short-circuit, so
+        /// querying immediately after <see cref="TransitionToKeplerRails"/> returns the
+        /// entry position exactly. Falls back to epoch tick (dt == 0) if no
+        /// <see cref="SimTickController"/> instance exists (EditMode tests).
         /// In InterstellarCruise mode (Phase 6+): would read CruiseState.PositionGalactic.
         /// PHASE 0: returns WorldPosition.Zero with an error log.
         /// </summary>
@@ -418,8 +430,11 @@ namespace SpaceSim.Foundation.Vessels
 
                 case PhysicsMode.KeplerRails:
                     if (State.KeplerState == null) return WorldPosition.Zero;
-                    (double3 relPosition, _) = OrbitalElements.ComputeStateVector(
-                        State.KeplerState, State.KeplerState.TrueAnomalyAtEpoch, _referenceBody.Mu);
+                    long queryTick = SimTickController.Instance != null
+                        ? SimTickController.Instance.TickNumber
+                        : State.KeplerState.EpochTick;
+                    (double3 relPosition, _) = KeplerPropagator.PropagateState(
+                        State.KeplerState, queryTick, _referenceBody.Mu, SimTickController.SimTickIntervalSeconds);
                     double3 absoluteWorld = _referenceBody.PositionWorld.Value + relPosition;
                     return new WorldPosition(absoluteWorld.x, absoluteWorld.y, absoluteWorld.z);
 

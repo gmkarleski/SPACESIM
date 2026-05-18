@@ -194,6 +194,49 @@ namespace SpaceSim.Foundation.SimTick
             Instance = null;
         }
 
+        /// <summary>
+        /// TEST-ONLY. Claim the singleton slot with the provided controller without
+        /// going through <see cref="Awake"/>.
+        ///
+        /// In EditMode, <see cref="Awake"/> does not fire on <c>AddComponent</c>, so
+        /// <see cref="Instance"/> is never claimed automatically. Tests that need
+        /// <see cref="Instance"/> to point at a specific controller (e.g.,
+        /// propagator-integration tests that need <see cref="TickNumber"/> visible
+        /// to <c>Vessel.GetWorldPosition</c>) call this directly.
+        ///
+        /// Production code MUST NOT call this. The intended path is Awake-driven
+        /// claim plus duplicate-detection logic; this setter skips both. Pair every
+        /// call with a matching <see cref="ClearInstanceForTesting"/> in TearDown to
+        /// avoid bleeding state across test cases.
+        /// </summary>
+        public static void SetInstanceForTesting(SimTickController controller)
+        {
+            Instance = controller;
+        }
+
+        /// <summary>
+        /// TEST-ONLY. Directly set <see cref="TickNumber"/> without running the cycle.
+        ///
+        /// Used by EditMode tests that need to advance the sim clock without the
+        /// side effects of <see cref="RunFixedUpdateCycle"/> (listener callbacks,
+        /// floating-origin shifts, PhysX state reads). The propagator-integration
+        /// tests are the canonical caller: they need a vessel to observe a non-zero
+        /// elapsed-tick delta when calling <see cref="IActiveVessel.GetWorldPosition"/>
+        /// or transitioning back to PhysX-active, and the cleanest path is a direct
+        /// tick-number write rather than driving the cycle in EditMode (where Time
+        /// is paused and the cycle's auxiliary state machinery isn't being exercised).
+        ///
+        /// Production code MUST NOT call this. <see cref="TickNumber"/> is otherwise
+        /// advanced only by <see cref="Step10_AdvanceCounter"/>, which is invoked
+        /// exclusively from <see cref="RunFixedUpdateCycle"/>. A test-only setter
+        /// is the sibling of <see cref="ClearInstanceForTesting"/>: both exist to
+        /// let tests reach internal state that the production lifecycle owns.
+        /// </summary>
+        public void SetTickNumberForTesting(long tick)
+        {
+            TickNumber = tick;
+        }
+
         // ----- Main cycle driver -----
 
         private void FixedUpdate()
@@ -296,10 +339,13 @@ namespace SpaceSim.Foundation.SimTick
         /// <summary>
         /// Step 4: apply analytic updates (Kepler-rails propagation, interstellar-cruise
         /// with relativistic time-dilation, fuel/life-support consumption).
-        /// STUB (commit 033). Fleshed out when the Kepler-rails propagator and the analytic
-        /// systems land (commit 036+).
+        /// STUB (commit 033). As of commit 040, the Kepler-rails propagator
+        /// (<see cref="SpaceSim.Foundation.Vessels.KeplerPropagator"/>) is wired in but
+        /// invoked on-demand by <c>Vessel.GetWorldPosition</c> and
+        /// <c>Vessel.TransitionToPhysXActive</c>, not from step 4. Step 4 gains work
+        /// when the event queue and multi-vessel state-update needs land (future commit).
         /// </summary>
-        private void Step4_ApplyAnalyticUpdates() { /* TODO: analytic propagation (commit 036+) */ }
+        private void Step4_ApplyAnalyticUpdates() { /* TODO: analytic propagation driver — event queue + multi-vessel updates (future commit). Per-vessel Kepler-rails position queries already work via on-demand propagator. */ }
 
         /// <summary>
         /// Step 5: reconcile PhysX-derived updates and analytic updates into the new

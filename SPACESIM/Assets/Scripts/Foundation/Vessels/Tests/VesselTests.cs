@@ -337,12 +337,118 @@ namespace SpaceSim.Foundation.Vessels.Tests
 
             _vessel.TransitionToKeplerRails();
 
-            // Now in Kepler-rails. GetWorldPosition computes from orbital elements at
-            // TrueAnomalyAtEpoch (Phase 0 lean) and adds reference body's world position.
+            // Now in Kepler-rails. GetWorldPosition propagates from epoch tick to current
+            // tick via KeplerPropagator. With no SimTickController instance present
+            // (this test doesn't construct one), the propagation tick falls back to
+            // EpochTick, making dt == 0 — the propagator short-circuits to the epoch
+            // state vector, identical to evaluating at TrueAnomalyAtEpoch.
             // Body's position is (0,0,0) in EditMode (Awake didn't fire), so the returned
             // position equals the orbital position relative to the body.
             WorldPosition pos = _vessel.GetWorldPosition();
             Assert.AreEqual(LeoRadius, pos.Value.x, 1.0, "GetWorldPosition.x in Kepler-rails mode");
+        }
+
+        // ----- Propagator integration (commit 040) -----
+
+        [Test]
+        public void KeplerRails_GetWorldPosition_AdvancesWithSimTick()
+        {
+            // Integration test: with a SimTickController present and TickNumber advanced
+            // past the vessel's KeplerState.EpochTick, GetWorldPosition should return a
+            // *propagated* position — not the entry position. This is the behavior that
+            // KeplerPropagator (commit 040) wires up; previously GetWorldPosition always
+            // returned the entry-state position regardless of elapsed sim time.
+
+            // Construct a SimTickController so the Vessel's propagation tick lookup hits
+            // a real instance instead of falling back to EpochTick. Awake doesn't fire
+            // on AddComponent in EditMode, so claim the singleton via the test-only
+            // SetInstanceForTesting hook.
+            _simTickGo = new GameObject("TestSimTick");
+            var controller = _simTickGo.AddComponent<SimTickController>();
+            SimTickController.SetInstanceForTesting(controller);
+            Assert.AreSame(controller, SimTickController.Instance,
+                "SimTickController.Instance must be set for this integration test to be meaningful");
+
+            // Position the vessel at LEO and transition to Kepler-rails. The EpochTick
+            // captured at transition is controller.TickNumber, currently 0.
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            Vector3 startPos = new Vector3((float)LeoRadius, 0f, 0f);
+            float vCircular = (float)math.sqrt(EarthMu / LeoRadius);
+            _vessel.Rigidbody.position = startPos;
+            _vessel.Rigidbody.linearVelocity = new Vector3(0f, vCircular, 0f);
+            _vessel.TransitionToKeplerRails();
+
+            Assert.AreEqual(0L, _vessel.State.KeplerState.EpochTick, "EpochTick should be 0 at transition");
+
+            // Query at tick 0: dt == 0, propagator short-circuits, position == startPos.
+            WorldPosition posAtEntry = _vessel.GetWorldPosition();
+            Assert.AreEqual(LeoRadius, posAtEntry.Value.x, 1.0,
+                "GetWorldPosition at EpochTick should equal entry position");
+
+            // Advance the tick clock by 100 ticks via the test-only setter.
+            // At 30 Hz, 100 ticks = 3.333s. Orbital period at LEO ≈ 5828s, so 100 ticks
+            // is ~0.057% of one period — well below a full revolution.
+            //
+            // Tangential velocity is ~7546 m/s; arc-length advance is ~25,150 m
+            // (about 25 km). Position should differ from entry by at least 10 km in
+            // the y direction (most of the tangential velocity was along y at entry).
+            controller.SetTickNumberForTesting(100);
+            WorldPosition posAdvanced = _vessel.GetWorldPosition();
+
+            double dx = posAdvanced.Value.x - posAtEntry.Value.x;
+            double dy = posAdvanced.Value.y - posAtEntry.Value.y;
+            double displacement = math.sqrt(dx * dx + dy * dy);
+
+            // Lower bound: 10 km confirms the vessel has visibly moved.
+            // Upper bound: 1,000 km confirms it hasn't accidentally advanced
+            // a full revolution (which would put it back near the entry position
+            // with a near-zero displacement — a false-positive trap if the upper
+            // bound were absent).
+            Assert.Greater(displacement, 10_000.0,
+                $"Vessel should have advanced >10 km after 100 ticks at LEO; got {displacement:F1} m");
+            Assert.Less(displacement, 1_000_000.0,
+                $"Vessel advance >1000 km after 100 ticks is implausible at LEO; got {displacement:F1} m");
+        }
+
+        [Test]
+        public void KeplerRails_TransitionToPhysXActive_UsesPropagatedPosition()
+        {
+            // Integration test: after sitting on Kepler-rails for some elapsed ticks,
+            // the rigidbody position on re-activation should reflect propagated position,
+            // NOT the entry position. This is the behavior that KeplerPropagator removes
+            // the "rewind on re-activation" Phase 0 limitation.
+
+            _simTickGo = new GameObject("TestSimTick");
+            var controller = _simTickGo.AddComponent<SimTickController>();
+            SimTickController.SetInstanceForTesting(controller);
+            Assert.AreSame(controller, SimTickController.Instance);
+
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            Vector3 startPos = new Vector3((float)LeoRadius, 0f, 0f);
+            float vCircular = (float)math.sqrt(EarthMu / LeoRadius);
+            _vessel.Rigidbody.position = startPos;
+            _vessel.Rigidbody.linearVelocity = new Vector3(0f, vCircular, 0f);
+            _vessel.TransitionToKeplerRails();
+
+            // Advance 100 ticks while on rails.
+            controller.SetTickNumberForTesting(100);
+
+            // Transition back. TransitionToPhysXActive should propagate position to
+            // tick 100 (3.333s after entry) rather than reading state at TrueAnomalyAtEpoch.
+            _vessel.TransitionToPhysXActive();
+
+            Vector3 reactivatedPos = _vessel.Rigidbody.position;
+
+            // Verify the rigidbody position is NOT at the entry position — that would
+            // be the old (commit 038 era) "rewind on re-activation" behavior.
+            double dx = reactivatedPos.x - startPos.x;
+            double dy = reactivatedPos.y - startPos.y;
+            double displacement = math.sqrt(dx * dx + dy * dy);
+
+            Assert.Greater(displacement, 10_000.0,
+                $"Re-activated rigidbody should have advanced >10 km from entry; got {displacement:F1} m (rewind regression?)");
+            Assert.Less(displacement, 1_000_000.0,
+                $"Re-activated rigidbody advance >1000 km after 100 ticks is implausible; got {displacement:F1} m");
         }
     }
 }

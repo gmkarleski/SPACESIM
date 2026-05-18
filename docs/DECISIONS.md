@@ -203,6 +203,25 @@ The format is intentionally informal — this is internal project memory, not a 
 **Implication:** All future MonoBehaviour input handling in this project uses the new Input System API. The Vessels asmdef now references `Unity.InputSystem`; other modules that need input similarly add the reference.
 **Locked in:** commit 039.
 
+### Kepler-rails propagator: on-demand stateless helper with schema fidelity
+
+**Date:** 2026-05-18 (commit 040)
+**Question:** When the Kepler-rails propagator lands, where does it live, what does it cache, and does its math force a schema change to `KeplerState`?
+**Decision:**
+- **Shape:** stateless static helper `KeplerPropagator.PropagateState(KeplerState, long currentTick, double mu, double tickIntervalSeconds)`. No instance state, no caching. One static class per `OrbitalElements` / `KeplerPropagator` separation of concerns: elements vs evolution.
+- **Invocation:** on-demand from `Vessel.GetWorldPosition` and `Vessel.TransitionToPhysXActive`. NOT driven from `SimTickController.Step4`. Step 4 stays a stub for this commit; it gains work when the event queue and multi-vessel state-update needs land.
+- **Math:** Newton-Raphson solving Kepler's equation. Elliptic branch (e<1) uses Conway's 1986 starter `E₀ = M + e·sin(M)/(1 - sin(M+e) + sin(M))` with defensive denominator guard. Hyperbolic branch (e>1) uses Conway's hyperbolic starter (`H/(e-1)` for small `|M|`, `sign(M)·ln(2|M|/e + 1.8)` otherwise) on `e·sinh(H) - H = M`. Tolerance 1e-10, max 15 iterations. No explicit parabolic (e≈1) branch — accept numerical instability in the ~1e-8 band around e=1.
+- **Schema fidelity:** `KeplerState.TrueAnomalyAtEpoch` stays as the canonical epoch value per netcode contract §2.3. The propagator converts ν₀ → M₀ → M(t) → E(t)/H(t) → ν(t) internally on every call. The schema is unchanged; what's stored is one true anomaly value and an epoch tick.
+**Alternatives considered:**
+- **Cache mean anomaly at epoch as a derived field on `KeplerState`** — rejected; this would conflate stored state (the contract specifies `TrueAnomalyAtEpoch`) with derived state (an implementation choice of which anomaly the math wants). Caching it also raises invalidation questions if any other element ever changes.
+- **Change `KeplerState.TrueAnomalyAtEpoch` to `MeanAnomalyAtEpoch`** — rejected; this is a schema change to the netcode contract §2.3 and deserves its own commit with rationale, not as a side-effect of implementation work. True anomaly is also the more natural value for rendering, debugging, and orbit-visualization tooling.
+- **Stateful propagator with cached last-tick state** — rejected; doesn't compose well across multiple vessels and introduces invalidation surface area. The recompute cost (1 Newton-Raphson solve per query) is sub-microsecond at the iteration counts we see.
+- **Drive propagation from `SimTickController.Step4` per FixedUpdate** — rejected for this commit; would require multi-vessel iteration infrastructure that doesn't exist yet, and on-demand computation is correct by construction for the current scope (single active vessel querying GetWorldPosition + transition).
+- **Explicit Barker's equation parabolic branch** — rejected; numerical instability in a band of e ≈ 1 ± 1e-8 is acceptable for this prototype phase. Real orbits don't sit precisely at e=1; the instability band is narrow enough that physical scenarios (planetary capture, escape) sample either side without touching the singular region.
+**Rationale (the schema-vs-implementation distinction):** the netcode contract specifies *what's stored*, not *how the math uses it*. `TrueAnomalyAtEpoch` is a stored field; the propagator's choice to convert to mean anomaly internally is an implementation detail that shouldn't surface in the schema. This distinction matters because schema changes ripple — they affect serialization, replication, save-load, future renderers, and any tooling that reads `KeplerState`. Implementation choices stay local to the implementation. When considering "should the schema change to make this implementation cleaner?" the default answer is no; schema changes deserve their own commit, their own rationale, and explicit acknowledgement of which downstream contracts they affect.
+**Implication:** future propagator extensions (e.g., explicit parabolic branch, J2 perturbations, atmospheric drag) layer on top of `KeplerPropagator.PropagateState` without schema changes. The propagator is the single point of evolution; `KeplerState` is the single point of element storage.
+**Locked in:** commit 040.
+
 ---
 
 ## Pending decisions (open questions still in `docs/CONSTRAINTS.md` §10)
