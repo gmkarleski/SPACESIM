@@ -179,6 +179,30 @@ The format is intentionally informal — this is internal project memory, not a 
 - Always require byte-level cross-check — rejected as overhead on every verification.
 **Locked in:** commit 035.
 
+### VesselRegistry as plain static class (no deferred-registration)
+
+**Date:** 2026-05-17 (commit 038)
+**Question:** Should `VesselRegistry` use the same deferred-registration pattern as `FloatingOriginManager` from commit 034 (pending-listeners queue, `RegisterListenerSafe` facade, `DrainPendingForTesting` test hook)?
+**Decision:** No. `VesselRegistry` is a plain static class with a single `_vessels` list. No pending queue, no drain step. The `Safe` suffix on `RegisterVesselSafe` / `UnregisterVesselSafe` is preserved for cross-codebase naming consistency, but the methods only do null-check and dedup.
+**Alternatives considered:**
+- Reflexive copy of commit 034's pattern (pending queue + drain) — rejected as over-engineering for a static class.
+- Singleton MonoBehaviour with deferred-registration — rejected; a registry of vessels has no need for an Instance-claim step and the MonoBehaviour overhead buys nothing.
+**Implication:** ~50 LOC saved in VesselRegistry.cs vs the pattern-matched version, ~4 tests saved that would have exercised pending-queue lifecycle.
+**Reusable pattern-selection criterion:** future static-class registries follow VesselRegistry's simple pattern, not FloatingOriginManager's. The discriminator is "does the class have a non-null window?" If yes — singleton MonoBehaviour whose `Instance` is null between scene load and Awake — use the pending queue. If no — static class with always-available members — direct registration is sufficient. This criterion separates the two patterns cleanly and gives future readers a one-question test for which pattern applies.
+**Locked in:** commit 038.
+
+### TestVesselDriver uses new Input System API (not legacy UnityEngine.Input)
+
+**Date:** 2026-05-17 (commit 039)
+**Question:** Which input API does Phase 0 test-scene code use — legacy `UnityEngine.Input` or the new `UnityEngine.InputSystem` package?
+**Decision:** New Input System API. `Keyboard.current.spaceKey.wasPressedThisFrame` instead of `Input.GetKeyDown(KeyCode.Space)`. Vessels asmdef gains a `Unity.InputSystem` reference.
+**Alternatives considered:**
+- Legacy `UnityEngine.Input` — rejected; the project's `activeInputHandler: 1` setting (Input System Package only) makes legacy API throw `InvalidOperationException` at runtime.
+- Switch project setting to "Both" so legacy works alongside new — rejected; aligning with the Unity 6 default reduces drift risk and the migration cost is small (one file, one asmdef reference).
+- Dual-API approach with `#if ENABLE_LEGACY_INPUT_MANAGER` / `#if ENABLE_INPUT_SYSTEM` preprocessor branches — rejected as over-engineering for one Phase 0 test driver.
+**Implication:** All future MonoBehaviour input handling in this project uses the new Input System API. The Vessels asmdef now references `Unity.InputSystem`; other modules that need input similarly add the reference.
+**Locked in:** commit 039.
+
 ---
 
 ## Pending decisions (open questions still in `docs/CONSTRAINTS.md` §10)

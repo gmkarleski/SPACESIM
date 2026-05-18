@@ -29,6 +29,8 @@ None.
 
 | Commit | What | Date |
 |---|---|---|
+| 039 | Input System migration + operational doc updates | 2026-05-17 |
+| 038 | Vessel containers + mode transition + TestVessels scene | 2026-05-17 |
 | 037 | Phase 0 artifact list for v1 | 2026-05-17 |
 | 036 | Operational scaffolding (PHASE_TRACKER, DECISIONS, ARCHITECTURE, SESSION_PROTOCOL, companion-doc template) | 2026-05-17 |
 | 035 | Workflow rule 6 formalization (sandbox-mount staleness) | 2026-05-17 |
@@ -44,9 +46,9 @@ None.
 
 ## Verification state
 
-**Tests:** 103 EditMode + 3 PlayMode = 106 total, all green.
+**Tests:** 137 EditMode + 6 PlayMode = 143 total, all green (commit 038 baseline; commit 039 adds no new tests). Count corrected during commit 039 pre-replay audit — earlier 146/152 was an estimation error in the commit 039 artifact draft; Unity test runner confirms 137 EditMode.
 
-**End-to-end Play verification:** TestCoordinates.unity exercises the full architectural spine (coordinate system + floating origin + sim-tick controller + deferred listener registration + rigidbody shift). Verified working at commit 034.
+**End-to-end Play verification:** TestCoordinates.unity exercises the foundational spine (coordinate system + floating origin + sim-tick controller + deferred listener registration + rigidbody shift) — verified working at commit 034. TestVessels.unity exercises the full vessel-container stack (Vessel + ReferenceBody + TestVesselDriver + mode transitions) — floating-origin shifts verified working in commit 038 end-to-end Play; Space-key mode transitions verified working after commit 039's Input System migration.
 
 **Git state:** Three commits on `main`, pushed to https://github.com/gmkarleski/SPACESIM.
 
@@ -75,7 +77,7 @@ Items that need to land before Phase 1 implementation can honestly begin:
 - [x] Workflow rule 6 formalized (commit 035)
 - [x] Operational scaffolding (commit 036)
 - [x] Phase 0 artifact list (Tier A/B/C content decisions for v1, commit 037)
-- [ ] Vessel containers per netcode contract §2 (next substantial implementation)
+- [x] Vessel containers per netcode contract §2 (commit 038, with Input System migration in commit 039)
 - [ ] At least one Kepler-rails mode test (validates the rails side of the mode boundary)
 - [ ] Mode transition test (PhysX-active ↔ Kepler-rails per netcode contract §3.1)
 

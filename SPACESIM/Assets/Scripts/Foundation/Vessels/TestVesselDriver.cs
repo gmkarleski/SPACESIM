@@ -3,6 +3,7 @@ using SpaceSim.Foundation.Coordinates;
 using SpaceSim.Foundation.SimTick;
 using Unity.Mathematics;
 using UnityEngine;
+using UnityEngine.InputSystem;
 using UnityEngine.UI;
 
 namespace SpaceSim.Foundation.Vessels
@@ -119,8 +120,19 @@ namespace SpaceSim.Foundation.Vessels
         {
             if (_vessel == null) return;
 
-            // Keypress: toggle mode on Space.
-            if (Input.GetKeyDown(KeyCode.Space))
+            // Keypress: toggle mode on Space, via the new Input System.
+            //
+            // This project's Active Input Handling (Project Settings → Player) is set to
+            // Input System Package, so the legacy UnityEngine.Input.GetKeyDown API throws
+            // an InvalidOperationException at runtime. The new API reads keyboard state
+            // through Keyboard.current; the null check guards the rare case where no
+            // keyboard device is present (e.g., headless test runs, gamepad-only devices).
+            //
+            // The wasPressedThisFrame property is the new-Input-System equivalent of
+            // legacy Input.GetKeyDown — fires once per key-down transition, false for held
+            // keys after the first frame.
+            Keyboard keyboard = Keyboard.current;
+            if (keyboard != null && keyboard.spaceKey.wasPressedThisFrame)
             {
                 if (_vessel.Mode == PhysicsMode.PhysXActive)
                 {
