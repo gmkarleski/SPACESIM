@@ -450,5 +450,536 @@ namespace SpaceSim.Foundation.Vessels.Tests
             Assert.Less(displacement, 1_000_000.0,
                 $"Re-activated rigidbody advance >1000 km after 100 ticks is implausible; got {displacement:F1} m");
         }
+
+        // ----- §3.1 mode transition procedure tests (commit 041) -----
+        //
+        // These tests exercise the PhysX-active ↔ Kepler-rails transition PROCEDURES
+        // under each §3.1 condition that can be constructed in Phase 0. They do NOT
+        // test trigger evaluation — no code in this prototype evaluates whether a
+        // vessel should transition modes; transitions only happen when explicitly
+        // invoked. Per-sim-tick trigger evaluation per §3.1 lands as Phase 1 work
+        // (see PHASE_TRACKER.md Phase 1 section after commit 041).
+        //
+        // Several conditions in §3.1 cannot be fully exercised in Phase 0 because
+        // the underlying authoritative-state fields are not yet implemented:
+        // thrust state, atmospheric context, contact forces, player focus,
+        // multi-vessel proximity. Tests covering those conditions are
+        // documentation-shaped: identical setup to the geometric-condition tests,
+        // distinct §3.1 condition mapping in their names and the PHASE 0 NOTE
+        // comment. They become substantive tests in Phase 1 when the underlying
+        // state fields exist.
+
+        // ----- PhysX-active → Kepler-rails procedure tests (one per §3.1 condition) -----
+
+        [Test]
+        public void TransitionToKeplerRails_AtBeyond50kmFromOrigin_Succeeds()
+        {
+            // §3.1 condition: "The vessel is more than 50 km from any active vessel
+            // (the active-vessel threshold, per commit 002 floating origin)."
+            //
+            // In Phase 0, there is no active-vessel registry beyond the single
+            // TestVessel; the 50 km proxy is geometric distance from the reference
+            // body's world position. LeoRadius (7,000,000 m) is ~140× the 50 km
+            // threshold — well into the "Kepler-rails-eligible" regime.
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
+            float vCircular = (float)math.sqrt(EarthMu / LeoRadius);
+            _vessel.Rigidbody.linearVelocity = new Vector3(0f, vCircular, 0f);
+
+            _vessel.TransitionToKeplerRails();
+
+            Assert.AreEqual(PhysicsMode.KeplerRails, _vessel.Mode,
+                "Vessel >50km from origin should transition successfully");
+            Assert.IsNotNull(_vessel.State.KeplerState, "KeplerState should be populated");
+            Assert.AreEqual(LeoRadius, _vessel.State.KeplerState.SemiMajorAxis, 1.0,
+                "Semi-major axis should equal LEO radius");
+        }
+
+        [Test]
+        public void TransitionToKeplerRails_WithZeroThrust_Succeeds()
+        {
+            // §3.1 condition: "AND no thrust is being applied (engines off)."
+            //
+            // PHASE 0 NOTE: §3.1 condition for thrust cannot be fully exercised
+            // in Phase 0 because the underlying state field is not yet implemented.
+            // This test verifies the transition procedure succeeds under the
+            // geometric/kinematic conditions we CAN construct. Trigger evaluation
+            // per §3.1 lands in Phase 1.
+            //
+            // PhysXState.ActiveThrustN exists as a field in the schema but is
+            // populated to 0.0 on transition and never read by the transition
+            // procedure itself — there is no "is thrust active" check in
+            // TransitionToKeplerRails. A future Phase 1 trigger evaluator will
+            // read this field; for now we just confirm the no-thrust setup
+            // succeeds the procedure.
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
+            float vCircular = (float)math.sqrt(EarthMu / LeoRadius);
+            _vessel.Rigidbody.linearVelocity = new Vector3(0f, vCircular, 0f);
+
+            _vessel.TransitionToKeplerRails();
+
+            Assert.AreEqual(PhysicsMode.KeplerRails, _vessel.Mode);
+            Assert.IsNotNull(_vessel.State.KeplerState);
+        }
+
+        [Test]
+        public void TransitionToKeplerRails_AboveAtmosphericBoundary_Succeeds()
+        {
+            // §3.1 condition: "AND no atmospheric drag is significant (altitude
+            // above atmospheric boundary OR atmospheric_density < threshold)."
+            //
+            // PHASE 0 NOTE: §3.1 condition for atmospheric drag cannot be fully
+            // exercised in Phase 0 because the underlying state field is not yet
+            // implemented. This test verifies the transition procedure succeeds
+            // under the geometric/kinematic conditions we CAN construct. Trigger
+            // evaluation per §3.1 lands in Phase 1.
+            //
+            // LEO radius (7,000,000 m) is ~600 km above Earth's surface, well above
+            // the Karman line (~100 km). PhysXState.AtmosphericDensity and
+            // AtmosphericVelocityRel exist as schema fields but are populated to
+            // zero on transition and never read by the procedure.
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
+            float vCircular = (float)math.sqrt(EarthMu / LeoRadius);
+            _vessel.Rigidbody.linearVelocity = new Vector3(0f, vCircular, 0f);
+
+            _vessel.TransitionToKeplerRails();
+
+            Assert.AreEqual(PhysicsMode.KeplerRails, _vessel.Mode);
+            Assert.IsNotNull(_vessel.State.KeplerState);
+        }
+
+        [Test]
+        public void TransitionToKeplerRails_NoContactForces_Succeeds()
+        {
+            // §3.1 condition: "AND no contact forces are active (not landed, not
+            // docked to a PhysX-active vessel)."
+            //
+            // PHASE 0 NOTE: §3.1 condition for contact forces cannot be fully
+            // exercised in Phase 0 because the underlying state field is not yet
+            // implemented. This test verifies the transition procedure succeeds
+            // under the geometric/kinematic conditions we CAN construct. Trigger
+            // evaluation per §3.1 lands in Phase 1.
+            //
+            // No docking or landing state exists in the Phase 0 schema. A vessel
+            // at LeoRadius with no Unity Collider-based contacts is implicitly
+            // "in free space" by virtue of its construction.
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
+            float vCircular = (float)math.sqrt(EarthMu / LeoRadius);
+            _vessel.Rigidbody.linearVelocity = new Vector3(0f, vCircular, 0f);
+
+            _vessel.TransitionToKeplerRails();
+
+            Assert.AreEqual(PhysicsMode.KeplerRails, _vessel.Mode);
+            Assert.IsNotNull(_vessel.State.KeplerState);
+        }
+
+        [Test]
+        public void TransitionToKeplerRails_WellDefinedTrajectory_Succeeds()
+        {
+            // §3.1 condition: "AND the vessel's trajectory is well-defined by
+            // patched conics around a single dominant body."
+            //
+            // Unlike conditions 2-4, this one CAN be exercised in Phase 0: the
+            // OrbitalElements.ComputeFromStateVector call produces a valid
+            // elliptical orbit when state-vector inputs are well-defined. This
+            // test uses a non-circular elliptical orbit (perigee 7,000 km, apogee
+            // 8,000 km) to confirm the procedure handles e>0 correctly, not just
+            // the e=0 special case covered by the other tests.
+            //
+            // For an ellipse with rp=7e6, ra=8e6: a = (rp+ra)/2 = 7.5e6;
+            // e = (ra-rp)/(ra+rp) = 1/15 ≈ 0.0667; v at perigee from vis-viva:
+            // v = sqrt(μ · (2/rp - 1/a)) ≈ sqrt(3.987e14 · (2.857e-7 - 1.333e-7))
+            //   ≈ sqrt(6.08e7) ≈ 7798 m/s — slightly faster than circular at rp.
+            double a = 7.5e6;
+            double rp = 7.0e6;
+            double vPerigee = math.sqrt(EarthMu * (2.0 / rp - 1.0 / a));
+
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.Rigidbody.position = new Vector3((float)rp, 0f, 0f);
+            _vessel.Rigidbody.linearVelocity = new Vector3(0f, (float)vPerigee, 0f);
+
+            _vessel.TransitionToKeplerRails();
+
+            Assert.AreEqual(PhysicsMode.KeplerRails, _vessel.Mode);
+            Assert.IsNotNull(_vessel.State.KeplerState);
+            // Semi-major axis tolerance: 1 km absolute (~1e-4 relative at 7.5e6).
+            // Eccentricity tolerance per the established 1e-6 pattern (float-
+            // precision-through-Rigidbody noise; see TransitionToKeplerRails_
+            // PopulatesKeplerStateWithRealOrbitalElements for the full derivation).
+            Assert.AreEqual(a, _vessel.State.KeplerState.SemiMajorAxis, 1000.0,
+                "Semi-major axis should equal 7.5e6 m");
+            Assert.AreEqual(1.0 / 15.0, _vessel.State.KeplerState.Eccentricity, 1e-4,
+                "Eccentricity should equal 1/15 ≈ 0.0667");
+        }
+
+        // ----- Kepler-rails → PhysX-active procedure tests (one per §3.1 trigger) -----
+
+        [Test]
+        public void TransitionToPhysXActive_Within50kmOfOrigin_Succeeds()
+        {
+            // §3.1 trigger: "The vessel enters within 50 km of any active vessel
+            // (the active-vessel proximity threshold)."
+            //
+            // PHASE 0 NOTE: the active-vessel proximity check requires a
+            // multi-vessel registry that doesn't yet exist; this test exercises
+            // the procedure with a single vessel transitioning back to PhysX-active
+            // after a brief Kepler-rails period. The "proximity" semantics are
+            // proxied by the procedure succeeding: the rigidbody is recreated with
+            // propagated state. Trigger evaluation per §3.1 lands in Phase 1.
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
+            float vCircular = (float)math.sqrt(EarthMu / LeoRadius);
+            _vessel.Rigidbody.linearVelocity = new Vector3(0f, vCircular, 0f);
+            _vessel.TransitionToKeplerRails();
+
+            _vessel.TransitionToPhysXActive();
+
+            Assert.AreEqual(PhysicsMode.PhysXActive, _vessel.Mode);
+            Assert.IsNotNull(_vessel.Rigidbody, "Rigidbody should be recreated on re-activation");
+            Assert.IsNotNull(_vessel.State.PhysXState, "PhysXState should be populated");
+            Assert.IsNull(_vessel.State.KeplerState, "KeplerState should be cleared");
+        }
+
+        [Test]
+        public void TransitionToPhysXActive_AtmosphericEntryPredicted_Succeeds()
+        {
+            // §3.1 trigger: "The vessel's trajectory predicts atmospheric entry
+            // within the next sim-tick (the pre-computed next_mode_transition_tick
+            // fires)."
+            //
+            // PHASE 0 NOTE: §3.1 condition for atmospheric-entry prediction cannot
+            // be fully exercised in Phase 0 because the underlying state field
+            // (KeplerState.NextModeTransitionTick) is populated to null per the
+            // Phase 0 scope comment in KeplerState.cs:79-82. This test verifies
+            // the transition procedure succeeds under the geometric/kinematic
+            // conditions we CAN construct. Trigger evaluation per §3.1 lands in
+            // Phase 1.
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
+            float vCircular = (float)math.sqrt(EarthMu / LeoRadius);
+            _vessel.Rigidbody.linearVelocity = new Vector3(0f, vCircular, 0f);
+            _vessel.TransitionToKeplerRails();
+
+            // Confirm the Phase 0 invariant — NextModeTransitionTick stays null —
+            // as a sanity check that this test's "trigger condition" cannot
+            // actually fire in the current code.
+            Assert.IsNull(_vessel.State.KeplerState.NextModeTransitionTick,
+                "Phase 0 scope: NextModeTransitionTick should be null until trigger evaluator lands");
+
+            _vessel.TransitionToPhysXActive();
+
+            Assert.AreEqual(PhysicsMode.PhysXActive, _vessel.Mode);
+            Assert.IsNotNull(_vessel.Rigidbody);
+        }
+
+        [Test]
+        public void TransitionToPhysXActive_PlayerFocusSwitch_Succeeds()
+        {
+            // §3.1 trigger: "The player switches focus to the vessel (player
+            // attention pulls vessels into PhysX-active)."
+            //
+            // PHASE 0 NOTE: §3.1 condition for player focus cannot be fully
+            // exercised in Phase 0 because the underlying mechanism (camera /
+            // input / focus subsystem) is not yet implemented. This test verifies
+            // the transition procedure succeeds under the geometric/kinematic
+            // conditions we CAN construct. Trigger evaluation per §3.1 lands in
+            // Phase 1.
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
+            float vCircular = (float)math.sqrt(EarthMu / LeoRadius);
+            _vessel.Rigidbody.linearVelocity = new Vector3(0f, vCircular, 0f);
+            _vessel.TransitionToKeplerRails();
+
+            _vessel.TransitionToPhysXActive();
+
+            Assert.AreEqual(PhysicsMode.PhysXActive, _vessel.Mode);
+            Assert.IsNotNull(_vessel.Rigidbody);
+        }
+
+        [Test]
+        public void TransitionToPhysXActive_ScriptedThrust_Succeeds()
+        {
+            // §3.1 trigger: "The vessel reaches a scripted mode change (Vizzy
+            // script triggering thrust, for example)."
+            //
+            // PHASE 0 NOTE: §3.1 condition for scripted mode change cannot be
+            // fully exercised in Phase 0 because the underlying mechanism (Vizzy
+            // / scripting subsystem) is not yet implemented; Vizzy ships in Phase
+            // 5. This test verifies the transition procedure succeeds under the
+            // geometric/kinematic conditions we CAN construct. Trigger evaluation
+            // per §3.1 lands in Phase 1; Vizzy integration lands in Phase 5.
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
+            float vCircular = (float)math.sqrt(EarthMu / LeoRadius);
+            _vessel.Rigidbody.linearVelocity = new Vector3(0f, vCircular, 0f);
+            _vessel.TransitionToKeplerRails();
+
+            _vessel.TransitionToPhysXActive();
+
+            Assert.AreEqual(PhysicsMode.PhysXActive, _vessel.Mode);
+            Assert.IsNotNull(_vessel.Rigidbody);
+        }
+
+        [Test]
+        public void TransitionToPhysXActive_MultiVesselProximityCluster_Succeeds()
+        {
+            // §3.1 trigger: "Multi-vessel proximity events (multiple Kepler-rails
+            // vessels in a 50 km cluster; resolve by computing relative positions
+            // and activating the largest cluster)."
+            //
+            // PHASE 0 NOTE: §3.1 condition for multi-vessel proximity cannot be
+            // fully exercised in Phase 0 because the underlying detection
+            // (VesselRegistry exists but no proximity-clustering logic does).
+            // This test verifies the transition procedure succeeds under the
+            // geometric/kinematic conditions we CAN construct. Trigger evaluation
+            // per §3.1 lands in Phase 1.
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
+            float vCircular = (float)math.sqrt(EarthMu / LeoRadius);
+            _vessel.Rigidbody.linearVelocity = new Vector3(0f, vCircular, 0f);
+            _vessel.TransitionToKeplerRails();
+
+            _vessel.TransitionToPhysXActive();
+
+            Assert.AreEqual(PhysicsMode.PhysXActive, _vessel.Mode);
+            Assert.IsNotNull(_vessel.Rigidbody);
+        }
+
+        // ----- Edge case and error path tests -----
+
+        [Test]
+        public void TransitionToKeplerRails_WhenInterstellarCruise_LogsErrorAndNoOps()
+        {
+            // §3.1 / §3.3 implication: direct InterstellarCruise → KeplerRails
+            // transition is rejected with an error log. Phase 6 scope per the
+            // implementation comment in Vessel.cs:196-202.
+            //
+            // Construction note: Vessel.Initialize rewrites initialMode ==
+            // InterstellarCruise to PhysXActive with an error log (Vessel.cs:
+            // 123-130). To exercise the transition's rejection path, we Initialize
+            // in PhysXActive (normal path) then directly assign State.Mode =
+            // InterstellarCruise to force the rejection state. This bypasses
+            // Initialize's mode-rewrite, which is the correct test scaffolding
+            // for the procedure-rejection path (we are not testing Initialize
+            // here, we are testing TransitionToKeplerRails's response to
+            // InterstellarCruise mode).
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.State.Mode = PhysicsMode.InterstellarCruise;
+
+            UnityEngine.TestTools.LogAssert.Expect(LogType.Error,
+                new System.Text.RegularExpressions.Regex(".*InterstellarCruise → KeplerRails.*"));
+
+            _vessel.TransitionToKeplerRails();
+
+            Assert.AreEqual(PhysicsMode.InterstellarCruise, _vessel.Mode,
+                "Mode should remain InterstellarCruise after rejected transition");
+        }
+
+        [Test]
+        public void TransitionToPhysXActive_WhenInterstellarCruise_LogsErrorAndNoOps()
+        {
+            // §3.1 / §3.3 implication: direct InterstellarCruise → PhysXActive
+            // transition is rejected with an error log. Phase 6 scope per the
+            // implementation comment in Vessel.cs:298-302.
+            //
+            // Construction note (same as the symmetric test above): Initialize in
+            // PhysXActive then directly assign State.Mode = InterstellarCruise to
+            // force the rejection state, bypassing Initialize's mode-rewrite. We
+            // are testing the transition's rejection, not Initialize's behavior.
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.State.Mode = PhysicsMode.InterstellarCruise;
+
+            UnityEngine.TestTools.LogAssert.Expect(LogType.Error,
+                new System.Text.RegularExpressions.Regex(".*InterstellarCruise → PhysXActive.*"));
+
+            _vessel.TransitionToPhysXActive();
+
+            Assert.AreEqual(PhysicsMode.InterstellarCruise, _vessel.Mode);
+        }
+
+        [Test]
+        public void TransitionToKeplerRails_WhenRigidbodyNull_LogsErrorAndNoOps()
+        {
+            // State-inconsistency case: vessel in PhysXActive mode but rigidbody
+            // missing. Initialize forces the component shape to match the mode,
+            // so we have to construct this state by destroying the rigidbody
+            // post-Initialize. The cached _rb field in Vessel becomes a destroyed
+            // UnityObject reference; Unity's overloaded == operator treats this as
+            // equal to null, so the guard at Vessel.cs:203 fires correctly.
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            Assert.IsNotNull(_vessel.Rigidbody, "Sanity: rigidbody present after Initialize");
+
+            // Destroy the rigidbody. Vessel's _rb field is now a destroyed
+            // UnityObject reference (==null per Unity's overload).
+            UnityObject.DestroyImmediate(_vessel.Rigidbody);
+
+            UnityEngine.TestTools.LogAssert.Expect(LogType.Error,
+                new System.Text.RegularExpressions.Regex(".*Rigidbody is null.*State is inconsistent.*"));
+
+            _vessel.TransitionToKeplerRails();
+
+            Assert.AreEqual(PhysicsMode.PhysXActive, _vessel.Mode,
+                "Mode should remain PhysXActive after rejected transition");
+            Assert.IsNull(_vessel.State.KeplerState,
+                "KeplerState should NOT be populated after rejected transition");
+        }
+
+        [Test]
+        public void TransitionToPhysXActive_WhenKeplerStateNull_LogsErrorAndNoOps()
+        {
+            // State-inconsistency case: vessel in KeplerRails mode but KeplerState
+            // is null. To construct this we Initialize in KeplerRails (which
+            // leaves KeplerState null per Vessel.cs:148-149 — ConfigureForKeplerRails
+            // only removes components, doesn't populate state), then attempt the
+            // transition.
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails);
+            Assert.IsNull(_vessel.State.KeplerState,
+                "Sanity: KeplerState null after Initialize-in-KeplerRails (no state to compute from)");
+
+            UnityEngine.TestTools.LogAssert.Expect(LogType.Error,
+                new System.Text.RegularExpressions.Regex(".*KeplerState is null.*State is inconsistent.*"));
+
+            _vessel.TransitionToPhysXActive();
+
+            Assert.AreEqual(PhysicsMode.KeplerRails, _vessel.Mode,
+                "Mode should remain KeplerRails after rejected transition");
+            Assert.IsNull(_vessel.Rigidbody,
+                "Rigidbody should NOT be added after rejected transition");
+        }
+
+        [Test]
+        public void TransitionToKeplerRails_BeforeInitialize_LogsWarningAndNoOps()
+        {
+            // Lifecycle case: TransitionToKeplerRails called on a vessel that
+            // hasn't been Initialized. Vessel.cs:186-190 short-circuits with a
+            // warning log.
+            //
+            // SetUp constructed _vessel via AddComponent<Vessel>(); Initialize has
+            // not been called. _initialized is false.
+            UnityEngine.TestTools.LogAssert.Expect(LogType.Warning,
+                new System.Text.RegularExpressions.Regex(".*before Initialize; ignored.*"));
+
+            _vessel.TransitionToKeplerRails();
+
+            // No state to verify (State is null pre-Initialize); the test passes
+            // by reaching this assertion without exceptions and with the expected
+            // log fired.
+            Assert.IsNull(_vessel.State, "State should remain null after rejected pre-Initialize transition");
+        }
+
+        [Test]
+        public void TransitionToPhysXActive_BeforeInitialize_LogsWarningAndNoOps()
+        {
+            // Symmetric lifecycle case: TransitionToPhysXActive called on a
+            // vessel that hasn't been Initialized. Vessel.cs:288-292 short-circuits
+            // with a warning log.
+            UnityEngine.TestTools.LogAssert.Expect(LogType.Warning,
+                new System.Text.RegularExpressions.Regex(".*before Initialize; ignored.*"));
+
+            _vessel.TransitionToPhysXActive();
+
+            Assert.IsNull(_vessel.State, "State should remain null after rejected pre-Initialize transition");
+        }
+
+        // ----- Stability tests -----
+
+        [Test]
+        public void MultipleRoundTrips_PhysXKeplerPhysXKepler_PreservesPosition()
+        {
+            // Stress test: three full PhysX → Kepler → PhysX round trips (six
+            // transitions total) should preserve position and velocity through
+            // float-precision-through-Rigidbody noise accumulation.
+            //
+            // Each transition routes through Vector3 (float, ~7 digits at 7e6 m
+            // → ~0.84 m float epsilon). Six conversions accumulate worst-case
+            // ~6 m position error and ~5e-3 m/s velocity error.
+            //
+            // Tolerances chosen above worst-case accumulation:
+            //   - Position: 10 m absolute (~1.4e-6 relative at LeoRadius)
+            //   - Velocity: 1e-2 m/s absolute (~1.3e-6 relative at vCircular)
+            // Eccentricity not checked — float-precision-through-Rigidbody noise
+            // can push e from 0 toward ~1e-5 cumulatively across multiple
+            // transitions; the position/velocity bounds are the operationally
+            // meaningful check for stability across mode flips.
+            //
+            // SimTickController NOT constructed → propagator falls back to
+            // EpochTick → dt=0 every transition → no propagation drift, only
+            // float-conversion drift.
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            Vector3 startPos = new Vector3((float)LeoRadius, 0f, 0f);
+            float vCircular = (float)math.sqrt(EarthMu / LeoRadius);
+            Vector3 startVel = new Vector3(0f, vCircular, 0f);
+            _vessel.Rigidbody.position = startPos;
+            _vessel.Rigidbody.linearVelocity = startVel;
+
+            for (int i = 0; i < 3; i++)
+            {
+                _vessel.TransitionToKeplerRails();
+                _vessel.TransitionToPhysXActive();
+            }
+
+            Vector3 endPos = _vessel.Rigidbody.position;
+            Vector3 endVel = _vessel.Rigidbody.linearVelocity;
+
+            Assert.AreEqual(startPos.x, endPos.x, 10.0f,
+                $"Position.x drift after 3 round trips: expected ~{startPos.x}, got {endPos.x}");
+            Assert.AreEqual(startPos.y, endPos.y, 10.0f, "Position.y drift after 3 round trips");
+            Assert.AreEqual(startPos.z, endPos.z, 10.0f, "Position.z drift after 3 round trips");
+            Assert.AreEqual(startVel.x, endVel.x, 1e-2f, "Velocity.x drift after 3 round trips");
+            Assert.AreEqual(startVel.y, endVel.y, 1e-2f, "Velocity.y drift after 3 round trips");
+            Assert.AreEqual(startVel.z, endVel.z, 1e-2f, "Velocity.z drift after 3 round trips");
+
+            // Verify the vessel is in PhysXActive mode at the end (odd number
+            // of pairs ending on TransitionToPhysXActive → final mode is
+            // PhysXActive).
+            Assert.AreEqual(PhysicsMode.PhysXActive, _vessel.Mode,
+                "After three (Kepler, PhysX) pairs, final mode should be PhysXActive");
+        }
+
+        [Test]
+        public void Transitions_SetLastAdvancedTickToCurrentTick()
+        {
+            // Bookkeeping test: every transition sets both ModeEnteredAtTick and
+            // LastAdvancedTick to the current sim-tick. With a SimTickController
+            // present and TickNumber advanced between transitions, we verify
+            // both fields track correctly.
+            //
+            // (Renamed from the spec's "PreservesLastAdvancedTick" because the
+            // value is SET to current tick on every transition, not preserved
+            // across transitions — clearer test name matches the behavior.)
+            _simTickGo = new GameObject("TestSimTick");
+            var controller = _simTickGo.AddComponent<SimTickController>();
+            SimTickController.SetInstanceForTesting(controller);
+
+            // Tick 0: Initialize in PhysXActive.
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            Assert.AreEqual(0L, _vessel.State.ModeEnteredAtTick,
+                "ModeEnteredAtTick should be 0 at Initialize");
+            Assert.AreEqual(0L, _vessel.State.LastAdvancedTick,
+                "LastAdvancedTick should be 0 at Initialize");
+
+            _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
+            float vCircular = (float)math.sqrt(EarthMu / LeoRadius);
+            _vessel.Rigidbody.linearVelocity = new Vector3(0f, vCircular, 0f);
+
+            // Advance to tick 50, transition to Kepler-rails.
+            controller.SetTickNumberForTesting(50);
+            _vessel.TransitionToKeplerRails();
+            Assert.AreEqual(50L, _vessel.State.ModeEnteredAtTick,
+                "ModeEnteredAtTick should be 50 after transition at tick 50");
+            Assert.AreEqual(50L, _vessel.State.LastAdvancedTick,
+                "LastAdvancedTick should be 50 after transition at tick 50");
+
+            // Advance to tick 150, transition back to PhysX-active.
+            controller.SetTickNumberForTesting(150);
+            _vessel.TransitionToPhysXActive();
+            Assert.AreEqual(150L, _vessel.State.ModeEnteredAtTick,
+                "ModeEnteredAtTick should be 150 after transition at tick 150");
+            Assert.AreEqual(150L, _vessel.State.LastAdvancedTick,
+                "LastAdvancedTick should be 150 after transition at tick 150");
+        }
     }
 }

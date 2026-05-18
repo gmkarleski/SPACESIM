@@ -222,6 +222,17 @@ The format is intentionally informal — this is internal project memory, not a 
 **Implication:** future propagator extensions (e.g., explicit parabolic branch, J2 perturbations, atmospheric drag) layer on top of `KeplerPropagator.PropagateState` without schema changes. The propagator is the single point of evolution; `KeplerState` is the single point of element storage.
 **Locked in:** commit 040.
 
+### Test-only scope for §3.1 mode transition test (commit 041)
+
+**Date:** 2026-05-18 (commit 041)
+**Question:** Should commit 041 implement per-sim-tick trigger evaluation per netcode contract §3.1, or limit scope to testing the existing transition procedures?
+**Decision:** Test-only scope. Commit 041 writes 18 tests against `Vessel.TransitionToKeplerRails` and `Vessel.TransitionToPhysXActive` exercising each §3.1 condition the test can construct in Phase 0. The trigger evaluator itself (per-sim-tick code that decides when transitions should fire) is deferred to Phase 1 and recorded as a Phase 1 remaining-work item.
+**Alternatives rejected:**
+- **Option B from the design conversation: implement `Vessel.EvaluateTriggers()` or `SimTickController.Step6_DetectModeTransitions` extension performing §3.1 condition checks per sim-tick.** Rejected because most §3.1 conditions depend on authoritative state fields (thrust state, atmospheric drag state, contact forces, player focus, proximity clustering) that don't exist in Phase 0. Implementing trigger evaluation would require either stub state fields that always pass checks (no real validation) or real state field implementation (Phase 1 scope creep into Phase 0).
+**Rationale (reusable pattern):** When implementing a contract item that depends on systems not yet built, test what's testable now and explicitly defer the rest to the phase where the dependencies exist. This preserves bounded phase scope while honestly documenting which contract items remain partially implemented. The commit artifact must explicitly distinguish what's tested (the procedure) from what isn't (the trigger evaluator).
+**Implication:** Phase 1 inherits the trigger evaluator as a carryover item. When implementing in Phase 1, the test infrastructure from commit 041 can be extended to validate the evaluator (the same test setups become evaluator-invocation tests rather than direct-method-call tests).
+**Locked in:** commit 041.
+
 ---
 
 ## Pending decisions (open questions still in `docs/CONSTRAINTS.md` §10)
