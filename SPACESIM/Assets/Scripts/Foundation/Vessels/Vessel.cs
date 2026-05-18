@@ -104,15 +104,32 @@ namespace SpaceSim.Foundation.Vessels
         ///   - Adds a FloatingOriginAnchor (after the Rigidbody, so the anchor's Awake
         ///     caches the rigidbody reference correctly)
         ///   - Disables gravity on the rigidbody by default (space sim convention)
-        /// If <paramref name="initialMode"/> is <see cref="PhysicsMode.KeplerRails"/>:
-        ///   - Removes any pre-existing Rigidbody
-        ///   - Removes any pre-existing FloatingOriginAnchor
         ///
         /// <para>
         /// <paramref name="state"/>'s <c>Mode</c> field is overwritten to match
         /// <paramref name="initialMode"/>. The initial mode parameter is the source of
         /// truth so test sites don't need to remember to set state.Mode separately.
         /// </para>
+        ///
+        /// STATE INVARIANT (since commit 042):
+        /// After Initialize completes, the schema invariant from
+        /// <c>docs/NETCODE_CONTRACT.md</c> §2.1 holds: <c>Mode == X</c> implies
+        /// <c>XState != null</c> for X in {PhysXActive, KeplerRails, InterstellarCruise}.
+        /// This 3-arg overload handles only <see cref="PhysicsMode.PhysXActive"/>
+        /// cleanly — it constructs a fresh <see cref="PhysXState"/> implicitly when
+        /// the rigidbody is added.
+        ///
+        /// This 3-arg overload REJECTS <see cref="PhysicsMode.KeplerRails"/>:
+        /// constructing a Kepler-rails vessel requires caller-provided orbital elements,
+        /// because the math has no way to invent them from nothing. Callers that need a
+        /// rails-mode vessel use the 4-arg overload
+        /// <see cref="Initialize(VesselAuthoritativeState, ReferenceBody, PhysicsMode, KeplerState)"/>.
+        /// A 3-arg call with KeplerRails logs an error and falls back to PhysXActive,
+        /// parallel to the existing InterstellarCruise rejection.
+        ///
+        /// <see cref="PhysicsMode.InterstellarCruise"/> is also rejected (Phase 6 scope);
+        /// when interstellar mode ships, an analogous overload accepting
+        /// <c>initialCruiseState</c> will land then.
         /// </summary>
         public void Initialize(
             VesselAuthoritativeState state,
@@ -129,7 +146,101 @@ namespace SpaceSim.Foundation.Vessels
                     $"Starting in PhysX-active instead.");
                 initialMode = PhysicsMode.PhysXActive;
             }
+            if (initialMode == PhysicsMode.KeplerRails)
+            {
+                Debug.LogError(
+                    $"Vessel.Initialize on '{gameObject.name}' requested KeplerRails mode " +
+                    $"via the 3-arg overload, but KeplerRails requires caller-provided " +
+                    $"orbital elements. Use the 4-arg overload " +
+                    $"Initialize(state, body, KeplerRails, initialKeplerState). " +
+                    $"Falling back to PhysX-active.");
+                initialMode = PhysicsMode.PhysXActive;
+            }
 
+            InitializeCore(state, referenceBody, initialMode, initialKeplerState: null);
+        }
+
+        /// <summary>
+        /// 4-arg overload for Kepler-rails initialization with caller-provided orbital
+        /// elements. Use this when constructing a vessel directly in Kepler-rails mode
+        /// (e.g., save-load that restores a vessel from stored orbital elements, or
+        /// integration tests that need a vessel on rails without going through
+        /// <see cref="TransitionToKeplerRails"/>).
+        ///
+        /// STATE INVARIANT: this overload guarantees the §2.1 schema invariant holds
+        /// after return — if <paramref name="initialMode"/> is
+        /// <see cref="PhysicsMode.KeplerRails"/>, <c>State.KeplerState</c> is populated
+        /// from <paramref name="initialKeplerState"/>.
+        ///
+        /// Per-mode behavior:
+        /// <list type="bullet">
+        ///   <item><see cref="PhysicsMode.KeplerRails"/>: requires
+        ///   <paramref name="initialKeplerState"/> non-null. If null, logs error and
+        ///   falls back to PhysX-active.</item>
+        ///   <item><see cref="PhysicsMode.PhysXActive"/>: this overload is the wrong
+        ///   tool — <paramref name="initialKeplerState"/> is ignored, an error is
+        ///   logged, and initialization proceeds in PhysX-active mode (so callers don't
+        ///   end up with a partially-initialized vessel). PhysX-active callers should
+        ///   use the 3-arg overload.</item>
+        ///   <item><see cref="PhysicsMode.InterstellarCruise"/>: existing Phase 6
+        ///   rejection; <paramref name="initialKeplerState"/> is ignored.</item>
+        /// </list>
+        /// </summary>
+        public void Initialize(
+            VesselAuthoritativeState state,
+            ReferenceBody referenceBody,
+            PhysicsMode initialMode,
+            KeplerState initialKeplerState)
+        {
+            if (state == null) throw new ArgumentNullException(nameof(state));
+            if (referenceBody == null) throw new ArgumentNullException(nameof(referenceBody));
+            if (initialMode == PhysicsMode.InterstellarCruise)
+            {
+                Debug.LogError(
+                    $"Vessel.Initialize on '{gameObject.name}' requested InterstellarCruise " +
+                    $"mode; that mode is deferred to Phase 6 per the Phase 0 artifact list. " +
+                    $"Starting in PhysX-active instead. (initialKeplerState ignored.)");
+                initialMode = PhysicsMode.PhysXActive;
+                initialKeplerState = null;
+            }
+            if (initialMode == PhysicsMode.PhysXActive)
+            {
+                Debug.LogError(
+                    $"Vessel.Initialize on '{gameObject.name}' used the 4-arg overload with " +
+                    $"PhysicsMode.PhysXActive; this overload is for KeplerRails initialization. " +
+                    $"PhysXActive does not accept initialKeplerState — use the 3-arg overload. " +
+                    $"Proceeding in PhysX-active mode with initialKeplerState ignored.");
+                initialKeplerState = null;
+            }
+            else if (initialMode == PhysicsMode.KeplerRails && initialKeplerState == null)
+            {
+                Debug.LogError(
+                    $"Vessel.Initialize on '{gameObject.name}' requested KeplerRails mode " +
+                    $"with null initialKeplerState; orbital elements are required. " +
+                    $"Falling back to PhysX-active.");
+                initialMode = PhysicsMode.PhysXActive;
+            }
+
+            InitializeCore(state, referenceBody, initialMode, initialKeplerState);
+        }
+
+        /// <summary>
+        /// Shared body of both Initialize overloads. Stores state, sets mode and tick
+        /// bookkeeping, populates <see cref="VesselAuthoritativeState.KeplerState"/>
+        /// (when applicable), forces the GameObject's component shape, and registers
+        /// with <see cref="VesselRegistry"/>.
+        ///
+        /// Precondition: the caller has already validated <paramref name="initialMode"/>
+        /// and mode-specific state parameters. <see cref="InitializeCore"/> trusts its
+        /// inputs and does no further validation — the per-overload public methods do
+        /// the mode-rejection / fallback work.
+        /// </summary>
+        private void InitializeCore(
+            VesselAuthoritativeState state,
+            ReferenceBody referenceBody,
+            PhysicsMode initialMode,
+            KeplerState initialKeplerState)
+        {
             State = state;
             _referenceBody = referenceBody;
             State.Mode = initialMode;
@@ -139,6 +250,21 @@ namespace SpaceSim.Foundation.Vessels
                 : 0L;
             State.ModeEnteredAtTick = tick;
             State.LastAdvancedTick = tick;
+
+            // Populate mode-specific state per the §2.1 schema invariant. Only
+            // KeplerRails uses the caller-provided initialKeplerState here; PhysXActive's
+            // PhysXState gets constructed implicitly inside ConfigureForPhysXActive +
+            // the post-Initialize lifecycle (the rigidbody add happens here; PhysXState
+            // population happens at the next mode-transition or sim-tick read).
+            if (initialMode == PhysicsMode.KeplerRails)
+            {
+                State.KeplerState = initialKeplerState;
+                State.PhysXState = null;
+            }
+            else  // PhysXActive (InterstellarCruise was rewritten in the public overloads)
+            {
+                State.KeplerState = null;
+            }
 
             // Force the GameObject into the right component shape for initialMode.
             if (initialMode == PhysicsMode.PhysXActive)

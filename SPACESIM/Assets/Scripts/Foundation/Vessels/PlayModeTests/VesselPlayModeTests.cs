@@ -93,7 +93,11 @@ namespace SpaceSim.Foundation.Vessels.Tests
                 "OnEnable should bail when _initialized is false; vessel not in registry yet.");
 
             // Now Initialize. Initialize itself calls RegisterVesselSafe if isActiveAndEnabled.
-            vessel.Initialize(NewState(), body, PhysicsMode.KeplerRails);
+            // Using PhysXActive: the test asserts registry registration only, not anything
+            // mode-specific. PhysXActive avoids the 4-arg overload (which requires a real
+            // KeplerState the test doesn't care about). Previously used KeplerRails; updated
+            // in commit 042 since the 3-arg overload no longer accepts KeplerRails.
+            vessel.Initialize(NewState(), body, PhysicsMode.PhysXActive);
             Assert.AreEqual(1, VesselRegistry.VesselCount,
                 "Initialize should register the vessel via its own RegisterVesselSafe call.");
             Assert.AreSame(vessel, VesselRegistry.Vessels[0]);
@@ -108,7 +112,10 @@ namespace SpaceSim.Foundation.Vessels.Tests
             _vesselGo = new GameObject("TestVessel");
             Vessel vessel = _vesselGo.AddComponent<Vessel>();
             yield return null;
-            vessel.Initialize(NewState(), body, PhysicsMode.KeplerRails);
+            // PhysXActive — symmetric to OnEnable_RegistersVesselWithRegistry; the test
+            // asserts unregister-on-disable, not anything mode-specific. Updated in commit
+            // 042 from KeplerRails.
+            vessel.Initialize(NewState(), body, PhysicsMode.PhysXActive);
             Assert.AreEqual(1, VesselRegistry.VesselCount,
                 "Setup: vessel should be registered after Initialize.");
 
@@ -139,9 +146,12 @@ namespace SpaceSim.Foundation.Vessels.Tests
             _vesselGo = new GameObject("TestVessel");
             Vessel vessel = _vesselGo.AddComponent<Vessel>();
             yield return null;
-            var state = NewState();
-            // Seed a KeplerState so TransitionToPhysXActive has something to transition from.
-            state.KeplerState = new KeplerState
+            // Construct the KeplerState that TransitionToPhysXActive will transition
+            // from. Pre-commit-042 this was a manual assignment to state.KeplerState
+            // before calling the 3-arg Initialize (the workaround for the
+            // Initialize-in-KeplerRails state inconsistency). Post-commit-042 the
+            // 4-arg overload populates State.KeplerState directly from the parameter.
+            var keplerState = new KeplerState
             {
                 SemiMajorAxis = LeoRadius,
                 Eccentricity = 0.0,
@@ -152,7 +162,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
                 EpochTick = 0,
                 ReferenceBodyId = body.BodyId,
             };
-            vessel.Initialize(state, body, PhysicsMode.KeplerRails);
+            vessel.Initialize(NewState(), body, PhysicsMode.KeplerRails, keplerState);
 
             // Transition to PhysX-active. This calls AddComponent<Rigidbody> followed by
             // AddComponent<FloatingOriginAnchor>. The anchor's OnEnable should fire

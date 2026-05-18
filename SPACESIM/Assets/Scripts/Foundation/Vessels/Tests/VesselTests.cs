@@ -96,6 +96,27 @@ namespace SpaceSim.Foundation.Vessels.Tests
             };
         }
 
+        /// <summary>
+        /// Construct a default circular-LEO KeplerState for tests that need to pass a
+        /// KeplerState to the 4-arg Initialize overload. The specific elements don't
+        /// matter for most tests — what matters is that the state is non-null and
+        /// internally consistent.
+        /// </summary>
+        private KeplerState NewKeplerState()
+        {
+            return new KeplerState
+            {
+                SemiMajorAxis = LeoRadius,
+                Eccentricity = 0.0,
+                Inclination = 0.0,
+                LongitudeOfAscendingNode = 0.0,
+                ArgumentOfPeriapsis = 0.0,
+                TrueAnomalyAtEpoch = 0.0,
+                EpochTick = 0,
+                ReferenceBodyId = _body != null ? _body.BodyId : Guid.Empty,
+            };
+        }
+
         // ----- Initialize -----
 
         [Test]
@@ -124,7 +145,10 @@ namespace SpaceSim.Foundation.Vessels.Tests
         [Test]
         public void Initialize_InKeplerRailsMode_DoesNotAddRigidbodyOrAnchor()
         {
-            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails);
+            // Updated in commit 042: uses the 4-arg overload with a default KeplerState.
+            // The 3-arg overload now rejects KeplerRails (would fall back to PhysXActive),
+            // which would invert this test's assertions.
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, NewKeplerState());
 
             Assert.IsNull(_vessel.Rigidbody, "Rigidbody should not be present in Kepler-rails mode");
             Assert.IsNull(_vesselGo.GetComponent<FloatingOriginAnchor>(),
@@ -234,11 +258,12 @@ namespace SpaceSim.Foundation.Vessels.Tests
         [Test]
         public void TransitionToKeplerRails_WhenAlreadyKeplerRails_LogsWarningAndNoOps()
         {
-            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails);
-            // Manually populate KeplerState (Initialize-with-KeplerRails leaves it null since
-            // we don't have a PhysX state to compute from). For this guard test the actual
-            // contents of KeplerState don't matter.
-            _vessel.State.KeplerState = new KeplerState { SemiMajorAxis = LeoRadius, Eccentricity = 0.0 };
+            // Updated in commit 042: uses the 4-arg overload, which populates State.KeplerState
+            // from the parameter. Pre-commit-042 this was Initialize-in-KeplerRails (3-arg)
+            // followed by a manual State.KeplerState assignment workaround for the now-fixed
+            // state-inconsistency bug. For this guard test the actual contents of KeplerState
+            // don't matter beyond non-null.
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, NewKeplerState());
 
             // Capture the expected warning.
             UnityEngine.TestTools.LogAssert.Expect(LogType.Warning,
@@ -831,13 +856,36 @@ namespace SpaceSim.Foundation.Vessels.Tests
         public void TransitionToPhysXActive_WhenKeplerStateNull_LogsErrorAndNoOps()
         {
             // State-inconsistency case: vessel in KeplerRails mode but KeplerState
-            // is null. To construct this we Initialize in KeplerRails (which
-            // leaves KeplerState null per Vessel.cs:148-149 — ConfigureForKeplerRails
-            // only removes components, doesn't populate state), then attempt the
-            // transition.
-            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails);
-            Assert.IsNull(_vessel.State.KeplerState,
-                "Sanity: KeplerState null after Initialize-in-KeplerRails (no state to compute from)");
+            // is null. This state is intentionally hard to construct — commit 042's
+            // Initialize fix ensures that the normal Initialize paths cannot produce
+            // it (Mode == KeplerRails ⟹ KeplerState != null after Initialize).
+            //
+            // CONSTRUCTION (post-commit-042): the test directly builds the inconsistent
+            // state by:
+            //   1. Initialize in PhysXActive (the only path that doesn't require
+            //      mode-specific state).
+            //   2. DestroyImmediate the Rigidbody and FloatingOriginAnchor that
+            //      ConfigureForPhysXActive added (otherwise the test's "Rigidbody
+            //      should NOT be added after rejected transition" assertion would
+            //      conflate "didn't add a new one" with "no rigidbody exists").
+            //   3. Set State.Mode = KeplerRails and State.KeplerState = null
+            //      directly, bypassing Initialize's invariant-maintenance.
+            //   4. Attempt the transition; verify the guard at Vessel.cs:305 fires.
+            //
+            // This is what "constructing the state-inconsistency directly" looks like
+            // now that Initialize-in-KeplerRails no longer produces it. The guard
+            // itself stays as defense-in-depth even though the production code can
+            // no longer reach the inconsistency through normal API calls.
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+
+            // Clean up the components that PhysXActive Initialize added; otherwise the
+            // post-transition rigidbody-null assertion would fail trivially.
+            UnityObject.DestroyImmediate(_vesselGo.GetComponent<FloatingOriginAnchor>());
+            UnityObject.DestroyImmediate(_vesselGo.GetComponent<Rigidbody>());
+
+            // Force the inconsistent state.
+            _vessel.State.Mode = PhysicsMode.KeplerRails;
+            _vessel.State.KeplerState = null;
 
             UnityEngine.TestTools.LogAssert.Expect(LogType.Error,
                 new System.Text.RegularExpressions.Regex(".*KeplerState is null.*State is inconsistent.*"));
@@ -846,7 +894,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
 
             Assert.AreEqual(PhysicsMode.KeplerRails, _vessel.Mode,
                 "Mode should remain KeplerRails after rejected transition");
-            Assert.IsNull(_vessel.Rigidbody,
+            Assert.IsNull(_vesselGo.GetComponent<Rigidbody>(),
                 "Rigidbody should NOT be added after rejected transition");
         }
 
@@ -980,6 +1028,124 @@ namespace SpaceSim.Foundation.Vessels.Tests
                 "ModeEnteredAtTick should be 150 after transition at tick 150");
             Assert.AreEqual(150L, _vessel.State.LastAdvancedTick,
                 "LastAdvancedTick should be 150 after transition at tick 150");
+        }
+
+        // ----- Initialize 4-arg overload (commit 042) -----
+
+        [Test]
+        public void Initialize_With4ArgOverload_KeplerRails_PopulatesKeplerState()
+        {
+            // Happy path: 4-arg Initialize with KeplerRails + a real KeplerState
+            // populates State.KeplerState and sets Mode == KeplerRails.
+            var inputKepler = NewKeplerState();
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, inputKepler);
+
+            Assert.AreEqual(PhysicsMode.KeplerRails, _vessel.Mode);
+            Assert.IsNotNull(_vessel.State.KeplerState,
+                "State.KeplerState should be non-null after Initialize(KeplerRails, NewKeplerState())");
+            Assert.AreSame(inputKepler, _vessel.State.KeplerState,
+                "State.KeplerState should reference the caller-provided KeplerState instance");
+        }
+
+        [Test]
+        public void Initialize_With4ArgOverload_KeplerRails_NullKeplerState_LogsErrorAndFallsBack()
+        {
+            // Error path: 4-arg Initialize with KeplerRails + null KeplerState logs
+            // error and falls back to PhysXActive (preserves schema invariant — vessel
+            // ends up in PhysXActive mode with no Kepler state).
+            UnityEngine.TestTools.LogAssert.Expect(LogType.Error,
+                new System.Text.RegularExpressions.Regex(".*KeplerRails mode with null initialKeplerState.*"));
+
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, initialKeplerState: null);
+
+            Assert.AreEqual(PhysicsMode.PhysXActive, _vessel.Mode,
+                "Mode should fall back to PhysXActive on null initialKeplerState");
+            Assert.IsNull(_vessel.State.KeplerState,
+                "State.KeplerState should be null in the fallback PhysXActive state");
+            Assert.IsNotNull(_vessel.Rigidbody,
+                "Rigidbody should be added per the PhysXActive fallback component shape");
+        }
+
+        [Test]
+        public void Initialize_With4ArgOverload_PhysXActive_LogsErrorAndIgnoresKeplerState()
+        {
+            // Overload misuse: 4-arg Initialize with PhysXActive logs error and
+            // proceeds in PhysXActive mode with initialKeplerState ignored. The error
+            // exists so the caller knows they used the wrong overload; the proceed
+            // semantics exist so the vessel ends up in a valid state regardless.
+            UnityEngine.TestTools.LogAssert.Expect(LogType.Error,
+                new System.Text.RegularExpressions.Regex(".*4-arg overload with PhysicsMode.PhysXActive.*"));
+
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive, NewKeplerState());
+
+            Assert.AreEqual(PhysicsMode.PhysXActive, _vessel.Mode);
+            Assert.IsNull(_vessel.State.KeplerState,
+                "initialKeplerState should be ignored when initialMode is PhysXActive");
+            Assert.IsNotNull(_vessel.Rigidbody, "Rigidbody should be added");
+        }
+
+        [Test]
+        public void Initialize_With3ArgOverload_KeplerRails_LogsErrorAndFallsBack()
+        {
+            // Post-commit-042 behavior: the 3-arg overload now rejects KeplerRails
+            // because constructing a Kepler-rails vessel requires caller-provided
+            // orbital elements. Falls back to PhysXActive, parallel to the existing
+            // InterstellarCruise rejection.
+            UnityEngine.TestTools.LogAssert.Expect(LogType.Error,
+                new System.Text.RegularExpressions.Regex(".*KeplerRails mode via the 3-arg overload.*"));
+
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails);
+
+            Assert.AreEqual(PhysicsMode.PhysXActive, _vessel.Mode,
+                "Mode should fall back to PhysXActive (3-arg overload doesn't accept KeplerRails)");
+            Assert.IsNull(_vessel.State.KeplerState);
+            Assert.IsNotNull(_vessel.Rigidbody);
+        }
+
+        [Test]
+        public void Initialize_With4ArgOverload_KeplerRails_DoesNotAddRigidbodyOrAnchor()
+        {
+            // Component-shape invariant: 4-arg Initialize with KeplerRails does NOT
+            // add a Rigidbody or FloatingOriginAnchor (those are PhysXActive's shape).
+            // Symmetric to Initialize_InKeplerRailsMode_DoesNotAddRigidbodyOrAnchor
+            // which covers the same property under a different focus (that test
+            // asserts component shape; this one asserts component shape under the
+            // 4-arg overload specifically).
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, NewKeplerState());
+
+            Assert.IsNull(_vessel.Rigidbody, "Rigidbody should not be present in Kepler-rails mode");
+            Assert.IsNull(_vesselGo.GetComponent<FloatingOriginAnchor>(),
+                "FloatingOriginAnchor should not be present in Kepler-rails mode");
+        }
+
+        [Test]
+        public void Initialize_With4ArgOverload_KeplerRails_PreservesProvidedElements()
+        {
+            // Field-by-field check: every orbital element the caller passes in
+            // appears unchanged on State.KeplerState. Catches any future regression
+            // where InitializeCore inadvertently overwrites a field.
+            var inputKepler = new KeplerState
+            {
+                SemiMajorAxis = 8_500_000.0,
+                Eccentricity = 0.15,
+                Inclination = 0.5,
+                LongitudeOfAscendingNode = 1.2,
+                ArgumentOfPeriapsis = 0.7,
+                TrueAnomalyAtEpoch = 1.5,
+                EpochTick = 42,
+                ReferenceBodyId = Guid.NewGuid(),
+            };
+
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, inputKepler);
+
+            Assert.AreEqual(inputKepler.SemiMajorAxis, _vessel.State.KeplerState.SemiMajorAxis);
+            Assert.AreEqual(inputKepler.Eccentricity, _vessel.State.KeplerState.Eccentricity);
+            Assert.AreEqual(inputKepler.Inclination, _vessel.State.KeplerState.Inclination);
+            Assert.AreEqual(inputKepler.LongitudeOfAscendingNode, _vessel.State.KeplerState.LongitudeOfAscendingNode);
+            Assert.AreEqual(inputKepler.ArgumentOfPeriapsis, _vessel.State.KeplerState.ArgumentOfPeriapsis);
+            Assert.AreEqual(inputKepler.TrueAnomalyAtEpoch, _vessel.State.KeplerState.TrueAnomalyAtEpoch);
+            Assert.AreEqual(inputKepler.EpochTick, _vessel.State.KeplerState.EpochTick);
+            Assert.AreEqual(inputKepler.ReferenceBodyId, _vessel.State.KeplerState.ReferenceBodyId);
         }
     }
 }

@@ -233,6 +233,19 @@ The format is intentionally informal — this is internal project memory, not a 
 **Implication:** Phase 1 inherits the trigger evaluator as a carryover item. When implementing in Phase 1, the test infrastructure from commit 041 can be extended to validate the evaluator (the same test setups become evaluator-invocation tests rather than direct-method-call tests).
 **Locked in:** commit 041.
 
+### Vessel.Initialize signature for state-mode consistency (commit 042)
+
+**Date:** 2026-05-18 (commit 042)
+**Question:** How does Initialize maintain the schema invariant that Mode == KeplerRails implies KeplerState != null?
+**Decision:** Overload-based API. The 3-arg overload (state, body, mode) supports only `PhysXActive` cleanly; it rejects `KeplerRails` with an error and falls back to `PhysXActive`, parallel to the existing `InterstellarCruise` rejection. A new 4-arg overload (state, body, mode, initialKeplerState) supports explicit Kepler-rails construction with caller-provided orbital elements.
+**Alternatives rejected:**
+- **Single signature with optional/nullable parameter:** ambiguous semantics, harder to enforce caller intent at compile time.
+- **Reject KeplerRails entirely in Initialize** (force all rails entries through `TransitionToKeplerRails`): would prevent legitimate save-load use cases where a vessel needs to be reconstructed directly in Kepler-rails mode with stored orbital elements.
+- **Modify the existing 3-arg signature to add a `KeplerState` parameter:** would break all existing PhysXActive callers, requiring sweeping updates.
+**Rationale:** Overload-based API preserves backward compatibility for the dominant case (PhysXActive callers, all unchanged) while making the KeplerRails construction path explicit and self-documenting. The compile-time signature differences make caller mistakes visible (PhysXActive callers don't accidentally pass orbital elements; KeplerRails callers can't accidentally forget them). Shared private `InitializeCore` method de-duplicates the body between overloads.
+**Implication:** Future Initialize variants for new modes (`InterstellarCruise` when Phase 6 ships, any others) follow the same pattern: per-mode overloads with mode-specific state parameters.
+**Locked in:** commit 042.
+
 ---
 
 ## Pending decisions (open questions still in `docs/CONSTRAINTS.md` §10)
