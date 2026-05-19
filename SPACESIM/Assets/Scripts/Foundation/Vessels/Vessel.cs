@@ -575,6 +575,348 @@ namespace SpaceSim.Foundation.Vessels
             }
         }
 
+        // ----- Mode transition trigger evaluation (commit 043) -----
+
+        /// <summary>
+        /// Threshold for atmospheric density below which atmospheric drag is considered
+        /// insignificant (kg/m³). §3.1's "atmospheric_density &lt; threshold" condition.
+        /// The value 1e-6 corresponds to roughly 100 km altitude on Earth — well above
+        /// the Karman line where orbital trajectories become well-defined. The vessel's
+        /// rigidbody could in principle still be subject to drag at densities slightly
+        /// below this but the operational regime where Kepler-rails is appropriate begins
+        /// here.
+        /// </summary>
+        private const double AtmosphericDensityThreshold = 1e-6;
+
+        /// <summary>
+        /// Proximity threshold for §3.1 transition triggers, in meters. 50 km matches
+        /// the floating-origin shift threshold from <c>commit 002 / 029</c> and the
+        /// netcode contract §3.1. The two thresholds are intentionally aligned: a vessel
+        /// that moves beyond 50 km of the active vessel is the same vessel that the
+        /// floating-origin system would no longer track precisely.
+        /// </summary>
+        private const double ProximityThresholdMeters = 50_000.0;
+
+        /// <summary>
+        /// Evaluate the §3.1 mode transition trigger conditions for this vessel and
+        /// return a suggestion to transition (or stay). Pure read-only — does not
+        /// invoke any transition; that's the driver's job.
+        ///
+        /// <para>
+        /// <see cref="PhysicsMode.PhysXActive"/> mode evaluates the 5-condition AND
+        /// conjunction (proximity, thrust, atmosphere, contact, well-defined-trajectory).
+        /// If ALL pass, suggests <see cref="PhysicsMode.KeplerRails"/> with reason
+        /// <see cref="TransitionTriggerReason.BeyondProximityWithCleanState"/>.
+        /// </para>
+        ///
+        /// <para>
+        /// <see cref="PhysicsMode.KeplerRails"/> mode evaluates the 5-condition OR
+        /// disjunction in declared order (first match wins): proximity, predicted
+        /// atmospheric entry, player focus, scripted thrust, multi-vessel cluster. If
+        /// any fires, suggests <see cref="PhysicsMode.PhysXActive"/> with the matching
+        /// reason.
+        /// </para>
+        ///
+        /// <para>
+        /// <see cref="PhysicsMode.InterstellarCruise"/> mode and pre-Initialize state
+        /// both return Stay — interstellar transitions are Phase 6, and evaluating
+        /// before Initialize would dereference null State. Defensive null check on
+        /// <paramref name="activeVesselForProximity"/> also returns Stay (no proximity
+        /// reference → cannot fire proximity-dependent conditions; safest to stay).
+        /// </para>
+        ///
+        /// PHASE 0 NOTE: most condition implementations are stubs whose Phase 0
+        /// behavior always passes (no thrust, no atmospheric drag, no contact, no
+        /// focus, no clustering). Only proximity has a real implementation in Phase 0.
+        /// See each <c>Has*</c> / <c>Is*</c> helper for its individual stub
+        /// documentation.
+        /// </summary>
+        /// <param name="activeVesselForProximity">
+        /// The active vessel whose position serves as the proximity reference point.
+        /// Typically <c>SimTickController.Instance.ActiveVessel</c>. Null returns Stay.
+        /// </param>
+        public TransitionEvaluation EvaluateTransitionTriggers(IActiveVessel activeVesselForProximity)
+        {
+            if (!_initialized || State == null)
+            {
+                return TransitionEvaluation.Stay();
+            }
+            if (activeVesselForProximity == null)
+            {
+                return TransitionEvaluation.Stay();
+            }
+
+            switch (State.Mode)
+            {
+                case PhysicsMode.PhysXActive:
+                    return EvaluatePhysXActiveTriggers(activeVesselForProximity);
+
+                case PhysicsMode.KeplerRails:
+                    return EvaluateKeplerRailsTriggers(activeVesselForProximity);
+
+                case PhysicsMode.InterstellarCruise:
+                    // Phase 6 scope — no transitions in/out of cruise mode in Phase 0.
+                    return TransitionEvaluation.Stay();
+
+                default:
+                    return TransitionEvaluation.Stay();
+            }
+        }
+
+        /// <summary>
+        /// Evaluate the PhysX-active → Kepler-rails 5-condition conjunction. All five
+        /// must hold simultaneously.
+        /// </summary>
+        private TransitionEvaluation EvaluatePhysXActiveTriggers(IActiveVessel activeVesselForProximity)
+        {
+            bool beyondProximity = IsBeyondProximityThreshold(activeVesselForProximity);
+            bool noThrust = HasNoThrust();
+            bool noAtmosphere = HasNoSignificantAtmosphericDrag();
+            bool noContact = !HasContactForces();
+            bool wellDefinedTrajectory = HasWellDefinedTrajectory();
+
+            if (beyondProximity && noThrust && noAtmosphere && noContact && wellDefinedTrajectory)
+            {
+                return TransitionEvaluation.Transition(
+                    PhysicsMode.KeplerRails,
+                    TransitionTriggerReason.BeyondProximityWithCleanState);
+            }
+            return TransitionEvaluation.Stay();
+        }
+
+        /// <summary>
+        /// Evaluate the Kepler-rails → PhysX-active 5-condition disjunction in declared
+        /// order. First match wins; remaining conditions are not evaluated.
+        /// </summary>
+        private TransitionEvaluation EvaluateKeplerRailsTriggers(IActiveVessel activeVesselForProximity)
+        {
+            // §3.1 trigger 1: within 50 km of any active vessel.
+            if (IsWithinProximityThreshold(activeVesselForProximity))
+            {
+                return TransitionEvaluation.Transition(
+                    PhysicsMode.PhysXActive,
+                    TransitionTriggerReason.ProximityToActiveVessel);
+            }
+
+            // §3.1 trigger 2: predicted atmospheric entry within next sim-tick.
+            if (IsAtmosphericEntryPredicted())
+            {
+                return TransitionEvaluation.Transition(
+                    PhysicsMode.PhysXActive,
+                    TransitionTriggerReason.AtmosphericEntryPredicted);
+            }
+
+            // §3.1 trigger 3: player focus switch.
+            if (HasPlayerFocusSwitch())
+            {
+                return TransitionEvaluation.Transition(
+                    PhysicsMode.PhysXActive,
+                    TransitionTriggerReason.PlayerFocusSwitch);
+            }
+
+            // §3.1 trigger 4: scripted mode change (Vizzy).
+            if (HasScriptedThrust())
+            {
+                return TransitionEvaluation.Transition(
+                    PhysicsMode.PhysXActive,
+                    TransitionTriggerReason.ScriptedThrust);
+            }
+
+            // §3.1 trigger 5: multi-vessel proximity cluster.
+            if (HasMultiVesselProximityCluster())
+            {
+                return TransitionEvaluation.Transition(
+                    PhysicsMode.PhysXActive,
+                    TransitionTriggerReason.MultiVesselProximityCluster);
+            }
+
+            return TransitionEvaluation.Stay();
+        }
+
+        // ----- §3.1 condition helpers (one per condition; PHASE 0 NOTE per stub) -----
+
+        /// <summary>
+        /// §3.1 condition: distance from this vessel to <paramref name="activeVessel"/>
+        /// is greater than <see cref="ProximityThresholdMeters"/>.
+        ///
+        /// Real implementation: computes Euclidean distance in double-precision world
+        /// coordinates. Works correctly for both PhysX-active mode (rigidbody position)
+        /// and Kepler-rails mode (propagated orbital position) because the
+        /// <see cref="GetWorldPosition"/> method handles both.
+        /// </summary>
+        private bool IsBeyondProximityThreshold(IActiveVessel activeVessel)
+        {
+            return DistanceTo(activeVessel) > ProximityThresholdMeters;
+        }
+
+        /// <summary>
+        /// §3.1 condition (inverse): distance from this vessel to
+        /// <paramref name="activeVessel"/> is less than
+        /// <see cref="ProximityThresholdMeters"/>.
+        ///
+        /// Used by the Kepler-rails → PhysX-active disjunction. Note the asymmetry: the
+        /// PhysX-active → Kepler-rails conjunction uses strict greater-than (the vessel
+        /// must be clearly outside the threshold), while the Kepler-rails →
+        /// PhysX-active disjunction uses strict less-than (the vessel must be clearly
+        /// inside). The strict inequality on both sides means a vessel sitting exactly
+        /// at 50 km will not transition in either direction — appropriate for an
+        /// hysteresis-free threshold.
+        /// </summary>
+        private bool IsWithinProximityThreshold(IActiveVessel activeVessel)
+        {
+            return DistanceTo(activeVessel) < ProximityThresholdMeters;
+        }
+
+        /// <summary>
+        /// Euclidean distance from this vessel's world position to
+        /// <paramref name="activeVessel"/>'s world position, in meters. Pure
+        /// double-precision math; no float conversions in the result path.
+        /// </summary>
+        private double DistanceTo(IActiveVessel activeVessel)
+        {
+            WorldPosition myPos = GetWorldPosition();
+            WorldPosition otherPos = activeVessel.GetWorldPosition();
+            double dx = myPos.Value.x - otherPos.Value.x;
+            double dy = myPos.Value.y - otherPos.Value.y;
+            double dz = myPos.Value.z - otherPos.Value.z;
+            return math.sqrt(dx * dx + dy * dy + dz * dz);
+        }
+
+        /// <summary>
+        /// §3.1 condition: no thrust is being applied.
+        ///
+        /// Reads <see cref="PhysXState.ActiveThrustN"/>. The field exists in the schema
+        /// (per netcode contract §2.2) but no system writes to it yet — engine
+        /// simulation is Phase 3+ (flight integration). Phase 0 vessels always have
+        /// <c>ActiveThrustN == 0.0</c>, so this check always passes; the wiring is
+        /// correct for when engines actually fire in a later phase.
+        ///
+        /// PHASE 0 NOTE: §3.1 condition for thrust is wired to the schema field but
+        /// the field is always stub-zero in Phase 0. When engine simulation lands
+        /// (Phase 3), this method's behavior changes automatically without
+        /// re-touching the evaluator code.
+        /// </summary>
+        private bool HasNoThrust()
+        {
+            if (State.PhysXState == null) return true;  // No PhysX state → no thrust by construction.
+            return State.PhysXState.ActiveThrustN == 0.0;
+        }
+
+        /// <summary>
+        /// §3.1 condition: no atmospheric drag is significant (altitude above
+        /// atmospheric boundary OR atmospheric_density &lt; threshold).
+        ///
+        /// Reads <see cref="PhysXState.AtmosphericDensity"/>. Same Phase 0 stub-state
+        /// pattern as <see cref="HasNoThrust"/>: the field exists, no system writes
+        /// to it yet (atmospheric flight model is Phase 5), so Phase 0 vessels always
+        /// have density 0 and this check always passes.
+        ///
+        /// PHASE 0 NOTE: §3.1 condition for atmospheric drag is wired to the schema
+        /// field; atmospheric model that populates the field is Phase 5.
+        /// </summary>
+        private bool HasNoSignificantAtmosphericDrag()
+        {
+            if (State.PhysXState == null) return true;  // No PhysX state → no atmosphere by construction.
+            return State.PhysXState.AtmosphericDensity < AtmosphericDensityThreshold;
+        }
+
+        /// <summary>
+        /// §3.1 condition: contact forces are active (landed, docked to PhysX-active vessel).
+        ///
+        /// PHASE 0 NOTE: NO contact-force detection system exists. This stub always
+        /// returns false (no contact). Always-false was chosen over an IsSleeping
+        /// proxy because the proxy would produce false-positives — a vessel sitting
+        /// on a planet with rigidbody-asleep would incorrectly report no-contact and
+        /// become eligible for Kepler-rails transition while physically touching a
+        /// body. Always-false simply means contact-force-checking is a no-op in Phase
+        /// 0; the conjunction relies on the proximity check to keep landed vessels
+        /// from transitioning (a landed vessel is by definition close to its body,
+        /// which means close to the active vessel if the active vessel is also at
+        /// that body). When real contact detection lands (Phase 3+), this method
+        /// gets a real body.
+        /// </summary>
+        private bool HasContactForces()
+        {
+            // PHASE 0 STUB: always-false. Real contact detection is Phase 3+.
+            return false;
+        }
+
+        /// <summary>
+        /// §3.1 condition: the vessel's trajectory is well-defined by patched conics
+        /// around a single dominant body.
+        ///
+        /// Phase 0 invariant: every vessel has a single non-null <see cref="ReferenceBody"/>
+        /// assigned at Initialize. Patched-conics multi-body handling (SOI transitions,
+        /// Lagrange-point regions) is Phase 1+ work; Phase 0 vessels always have a
+        /// well-defined trajectory by virtue of having one and only one dominant body.
+        /// </summary>
+        private bool HasWellDefinedTrajectory()
+        {
+            return _referenceBody != null;
+        }
+
+        /// <summary>
+        /// §3.1 trigger: predicted atmospheric entry within the next sim-tick. Reads
+        /// <see cref="KeplerState.NextModeTransitionTick"/>; if set and within one tick
+        /// of the current sim-tick, atmospheric entry is imminent.
+        ///
+        /// PHASE 0 NOTE: <see cref="KeplerState.NextModeTransitionTick"/> is always
+        /// null in Phase 0 — event prediction is Phase 1+ work. This method
+        /// returns false unconditionally until that prediction system lands.
+        /// </summary>
+        private bool IsAtmosphericEntryPredicted()
+        {
+            if (State.KeplerState == null) return false;
+            long? predicted = State.KeplerState.NextModeTransitionTick;
+            if (!predicted.HasValue) return false;
+
+            long currentTick = SimTickController.Instance != null
+                ? SimTickController.Instance.TickNumber
+                : State.KeplerState.EpochTick;
+            return predicted.Value <= currentTick + 1;
+        }
+
+        /// <summary>
+        /// §3.1 trigger: player switched focus to this vessel.
+        ///
+        /// PHASE 0 NOTE: no player-focus subsystem exists. The TestVesselDriver's
+        /// Space-key handler invokes transitions directly via the imperative API,
+        /// not via this evaluator path. Real focus-tracking is Phase 5+ (camera /
+        /// input routing tied to the Mission Control UI).
+        /// </summary>
+        private bool HasPlayerFocusSwitch()
+        {
+            // PHASE 0 STUB: no focus subsystem. Always-false.
+            return false;
+        }
+
+        /// <summary>
+        /// §3.1 trigger: scripted mode change (Vizzy script triggering thrust, etc.).
+        ///
+        /// PHASE 0 NOTE: Vizzy ships in Phase 5. No scripting subsystem exists in
+        /// Phase 0; scripted thrust is unreachable.
+        /// </summary>
+        private bool HasScriptedThrust()
+        {
+            // PHASE 0 STUB: no scripting subsystem. Always-false.
+            return false;
+        }
+
+        /// <summary>
+        /// §3.1 trigger: multi-vessel proximity events (multiple Kepler-rails vessels
+        /// in a 50 km cluster).
+        ///
+        /// PHASE 0 NOTE: no multi-vessel proximity-clustering logic exists. Phase 0
+        /// scenes have one vessel; the cluster trigger has no operational meaning.
+        /// When multi-vessel simulation lands (Phase 5+), this method iterates
+        /// <see cref="VesselRegistry.Vessels"/> for nearby rails-mode peers.
+        /// </summary>
+        private bool HasMultiVesselProximityCluster()
+        {
+            // PHASE 0 STUB: no multi-vessel logic. Always-false.
+            return false;
+        }
+
         // ----- Internal helpers -----
 
         /// <summary>

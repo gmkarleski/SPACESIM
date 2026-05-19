@@ -114,6 +114,15 @@ namespace SpaceSim.Foundation.Vessels
                     $"No active vessel will be registered. Floating-origin shifts will not fire until the " +
                     $"controller exists and SetActiveVessel is called.");
             }
+
+            // Wire up the per-sim-tick mode transition trigger evaluator (commit 043).
+            // The driver subscribes to SimTickController.TickAdvanced; the subscription
+            // is in place from this point forward. However, the driver's master switch
+            // (VesselTransitionDriver.Enabled) defaults to false — automatic mode
+            // transitions do not fire in Play unless code elsewhere explicitly sets the
+            // flag to true. Phase 0 / early Phase 1 expects the flag to stay off; Space-key
+            // transitions and other imperative calls continue to drive mode changes.
+            VesselTransitionDriver.Initialize();
         }
 
         private void Update()

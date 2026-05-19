@@ -246,6 +246,31 @@ The format is intentionally informal — this is internal project memory, not a 
 **Implication:** Future Initialize variants for new modes (`InterstellarCruise` when Phase 6 ships, any others) follow the same pattern: per-mode overloads with mode-specific state parameters.
 **Locked in:** commit 042.
 
+### Per-sim-tick mode transition trigger evaluator (commit 043)
+
+**Date:** 2026-05-18 (commit 043)
+**Question:** Where does §3.1's per-sim-tick trigger evaluation live in the codebase, given the asmdef direction established in commit 038 (Vessels → SimTick, not the reverse)?
+**Decision:** Multi-part design:
+- **(a) Evaluation logic lives on `Vessel`** as `EvaluateTransitionTriggers(IActiveVessel)`. The vessel knows its own state, reference body, rigidbody, and mode — it is the natural owner of the question "should I transition?" Return type is a `TransitionEvaluation` struct (`SuggestedMode` nullable + `Reason` enum).
+- **(b) Driver lives in Vessels module** as `VesselTransitionDriver` static class. Subscribes to `SimTickController.TickAdvanced` (the cross-module event hook), iterates `VesselRegistry.Vessels`, calls `EvaluateTransitionTriggers` on each, dispatches the corresponding `TransitionTo*` method.
+- **(c) Driver fires from `TickAdvanced` (after Step 10), not literally inside Step 6.** §3.1 says "trigger evaluation runs at every sim-tick" — satisfied by TickAdvanced (one fire per tick, transitions complete between tick N's Step 10 and tick N+1's Step 1). Literal "inside Step 6" would require SimTickController to iterate `VesselRegistry`, which would close the asmdef cycle commit 038 deliberately broke.
+- **(d) Driver is disabled by default** (`Enabled` flag, defaults false). Stub-state conditions (thrust, atmosphere, contact, focus, scripted, multi-vessel) all always-pass in Phase 0; enabling the driver would cause vessels beyond 50 km to automatically transition to Kepler-rails during Phase 0 Play. Flag stays false until upstream state systems populate the schema fields with real values.
+- **(e) Return type is `TransitionEvaluation` struct, not nullable `PhysicsMode?`.** The struct pairs the decision (`SuggestedMode`) with the firing condition (`Reason`); the driver logs the reason directly. A nullable would force the driver to reverse-engineer the reason from the vessel's current mode — fragile and gets harder as conditions accumulate.
+
+**Alternatives rejected:**
+- **`SimTickController.Step6_DetectModeTransitions` directly iterating `VesselRegistry`:** closes the asmdef cycle (SimTick → Vessels), which commit 038 broke for the IActiveVessel interface reason.
+- **`IActiveVessel` interface extension with an `EvaluateTriggers` method:** would only handle the single active vessel (the interface's existing scope); the §3.1 contract specifies trigger evaluation on EVERY vessel, including Kepler-rails vessels needing proximity-to-active-vessel checks.
+- **Enabled-by-default with stub-state conditions:** would cause vessels beyond 50 km to automatically transition to Kepler-rails during Phase 0 Play (the conjunction with no thrust, no atmosphere, no contact, well-defined trajectory always passes in Phase 0 because the first three are stubs). Surprising behavior for any Phase 0 test scene with vessels beyond proximity.
+- **`Rigidbody.IsSleeping()` as a contact-force proxy:** would produce false-positives — a vessel sitting on a planet with rigidbody-asleep would incorrectly report no-contact and become eligible for Kepler-rails transition while physically touching a body. Always-false stub is the safer Phase 0 placeholder.
+- **Simpler nullable `PhysicsMode?` return type:** loses the reason information; diagnostic logging would have to reverse-engineer which condition fired from the vessel's mode, which is fragile and worsens as conditions accumulate.
+- **Internal driver state on `SimTickController` (a `_triggerEvaluatorEnabled` flag on the controller):** would require SimTickController to know about the trigger evaluator's existence, inverting the asmdef ownership direction. The driver's `Enabled` flag lives on the driver itself, where the "is the evaluator running?" question naturally belongs.
+
+**Rationale (preserved asmdef direction + Phase 0 Play stability):** This multi-part split preserves the asmdef direction established in commit 038, keeps Phase 0 Play behavior identical to commit 042, and lays the infrastructure for upstream state systems to flip the `Enabled` flag when they're ready. The disabled-by-default flag is the key — it lets the evaluator land, be tested, and be reviewed in isolation without affecting any current Phase 0 scene's behavior. The Step-6-vs-TickAdvanced timing distinction is a deliberate trade-off, documented rather than hidden: the §3.1 contract's "trigger evaluation runs at every sim-tick" is satisfied at the TickAdvanced event boundary; the literal location in the cycle is the event handler, not step 6. Self-proximity edge case (vessel evaluates against itself) works correctly without special-case math: distance to self is zero, never exceeds the threshold, so the active vessel never suggests Kepler-rails for itself (correct per the contract's "any active vessel" framing).
+
+**Implication:** When Phase 5+ engine systems wire real thrust into `PhysXState.ActiveThrustN`, the trigger evaluator immediately becomes meaningful without any code changes to `Vessel.EvaluateTransitionTriggers` or the driver. Same for atmospheric drag (Phase 5 atmospheric model), contact forces (Phase 3+ collision system), player focus (Phase 5 Mission Control UI), Vizzy scripted thrust (Phase 5), and multi-vessel proximity clustering (Phase 5+ multi-vessel sim). Each upstream system that lands moves more conditions from stub-state to real-state. A single future commit can flip `VesselTransitionDriver.Enabled = true` once enough upstream state exists that automatic transitions are meaningful.
+
+**Locked in:** commit 043.
+
 ---
 
 ## Pending decisions (open questions still in `docs/CONSTRAINTS.md` §10)

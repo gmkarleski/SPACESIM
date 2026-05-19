@@ -51,6 +51,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
             VesselRegistry.ClearForTesting();
             FloatingOriginManager.ClearInstanceForTesting();
             SimTickController.ClearInstanceForTesting();
+            VesselTransitionDriver.Shutdown();
 
             // ReferenceBody MonoBehaviour. Awake doesn't fire in EditMode, so the body's
             // BodyId stays Guid.Empty and PositionWorld stays default(WorldPosition).
@@ -80,6 +81,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
             VesselRegistry.ClearForTesting();
             FloatingOriginManager.ClearInstanceForTesting();
             SimTickController.ClearInstanceForTesting();
+            VesselTransitionDriver.Shutdown();
         }
 
         // ----- Helpers -----
@@ -1146,6 +1148,440 @@ namespace SpaceSim.Foundation.Vessels.Tests
             Assert.AreEqual(inputKepler.TrueAnomalyAtEpoch, _vessel.State.KeplerState.TrueAnomalyAtEpoch);
             Assert.AreEqual(inputKepler.EpochTick, _vessel.State.KeplerState.EpochTick);
             Assert.AreEqual(inputKepler.ReferenceBodyId, _vessel.State.KeplerState.ReferenceBodyId);
+        }
+
+        // ----- Trigger evaluation: EvaluateTransitionTriggers (commit 043) -----
+
+        /// <summary>
+        /// Stub IActiveVessel used as the proximity reference in trigger-evaluation
+        /// tests. Returns the constructor-supplied world position and mode. Useful for
+        /// controlling distance-to-active-vessel independently of any real Vessel
+        /// instance.
+        /// </summary>
+        private class StubActiveVessel : IActiveVessel
+        {
+            private readonly WorldPosition _pos;
+            private readonly PhysicsMode _mode;
+            public StubActiveVessel(WorldPosition pos, PhysicsMode mode = PhysicsMode.PhysXActive)
+            {
+                _pos = pos;
+                _mode = mode;
+            }
+            public WorldPosition GetWorldPosition() => _pos;
+            public PhysicsMode Mode => _mode;
+        }
+
+        /// <summary>
+        /// Stub IActiveVessel that throws on GetWorldPosition. Used to verify the
+        /// driver's exception handling around the per-vessel evaluation call.
+        /// </summary>
+        private class ThrowingActiveVessel : IActiveVessel
+        {
+            public WorldPosition GetWorldPosition()
+            {
+                throw new InvalidOperationException("Stub throws by design");
+            }
+            public PhysicsMode Mode => PhysicsMode.PhysXActive;
+        }
+
+        [Test]
+        public void EvaluateTransitionTriggers_BeforeInitialize_ReturnsStay()
+        {
+            // _vessel has been AddComponent'd in SetUp but Initialize has NOT been called.
+            // The evaluator must short-circuit on !_initialized before touching State,
+            // which is null at this point.
+            var activeRef = new StubActiveVessel(new WorldPosition(0, 0, 0));
+            TransitionEvaluation result = _vessel.EvaluateTransitionTriggers(activeRef);
+
+            Assert.IsFalse(result.SuggestedMode.HasValue,
+                "Pre-Initialize evaluation should return Stay (no suggestion)");
+            Assert.AreEqual(TransitionTriggerReason.None, result.Reason);
+        }
+
+        [Test]
+        public void EvaluateTransitionTriggers_PhysXActive_BeyondProximity_AllConditionsPass_SuggestsKeplerRails()
+        {
+            // The happy path: PhysXActive vessel at LEO, active reference at origin
+            // (LeoRadius = 7,000,000 m, well past 50 km proximity threshold), default
+            // stub thrust/atmosphere fields (zero), valid ReferenceBody.
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
+
+            // Active vessel reference at (0,0,0) — far from our LEO vessel.
+            var activeRef = new StubActiveVessel(new WorldPosition(0, 0, 0));
+            TransitionEvaluation result = _vessel.EvaluateTransitionTriggers(activeRef);
+
+            Assert.IsTrue(result.SuggestedMode.HasValue,
+                "All five §3.1 conditions hold → suggestion should be non-null");
+            Assert.AreEqual(PhysicsMode.KeplerRails, result.SuggestedMode.Value);
+            Assert.AreEqual(TransitionTriggerReason.BeyondProximityWithCleanState, result.Reason);
+        }
+
+        [Test]
+        public void EvaluateTransitionTriggers_PhysXActive_WithinProximity_SuggestsStay()
+        {
+            // PhysXActive vessel within 50 km of the active reference. Proximity fails,
+            // so the conjunction fails (one falsy condition is enough). Result: Stay.
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.Rigidbody.position = new Vector3(10_000f, 0f, 0f);  // 10 km from origin
+
+            var activeRef = new StubActiveVessel(new WorldPosition(0, 0, 0));
+            TransitionEvaluation result = _vessel.EvaluateTransitionTriggers(activeRef);
+
+            Assert.IsFalse(result.SuggestedMode.HasValue, "10 km < 50 km threshold → Stay");
+            Assert.AreEqual(TransitionTriggerReason.None, result.Reason);
+        }
+
+        [Test]
+        public void EvaluateTransitionTriggers_PhysXActive_WithThrust_SuggestsStay()
+        {
+            // Vessel beyond proximity threshold, but with thrust applied (we manually
+            // populate the stub field). Conjunction fails on thrust; result: Stay.
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
+            // After Initialize, PhysXState is null until TransitionToPhysXActive
+            // populates it. For this test we populate State.PhysXState manually with
+            // non-zero thrust.
+            _vessel.State.PhysXState = new PhysXState { ActiveThrustN = 1000.0 };
+
+            var activeRef = new StubActiveVessel(new WorldPosition(0, 0, 0));
+            TransitionEvaluation result = _vessel.EvaluateTransitionTriggers(activeRef);
+
+            Assert.IsFalse(result.SuggestedMode.HasValue,
+                "Thrust > 0 → HasNoThrust returns false → conjunction fails → Stay");
+            Assert.AreEqual(TransitionTriggerReason.None, result.Reason);
+        }
+
+        [Test]
+        public void EvaluateTransitionTriggers_PhysXActive_InAtmosphere_SuggestsStay()
+        {
+            // Vessel beyond proximity, no thrust, but in atmosphere (manually populated
+            // AtmosphericDensity above the 1e-6 threshold). Conjunction fails.
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
+            _vessel.State.PhysXState = new PhysXState
+            {
+                ActiveThrustN = 0.0,
+                AtmosphericDensity = 1.0,  // way above the 1e-6 threshold
+            };
+
+            var activeRef = new StubActiveVessel(new WorldPosition(0, 0, 0));
+            TransitionEvaluation result = _vessel.EvaluateTransitionTriggers(activeRef);
+
+            Assert.IsFalse(result.SuggestedMode.HasValue,
+                "Atmospheric density above threshold → HasNoSignificantAtmosphericDrag false → Stay");
+            Assert.AreEqual(TransitionTriggerReason.None, result.Reason);
+        }
+
+        [Test]
+        public void EvaluateTransitionTriggers_KeplerRails_WithinProximity_SuggestsPhysXActive_WithProximityReason()
+        {
+            // KeplerRails vessel within 50 km of active reference. The first
+            // disjunctive condition fires.
+            // EpochTick = 0; with no SimTickController, propagation returns epoch state
+            // (dt = 0); position of the orbit at TrueAnomaly = 0 is (a, 0, 0) = LeoRadius.
+            // We place the active reference at LeoRadius too (proximity 0).
+            var kepler = NewKeplerState();
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+
+            var activeRef = new StubActiveVessel(new WorldPosition(LeoRadius, 0, 0));
+            TransitionEvaluation result = _vessel.EvaluateTransitionTriggers(activeRef);
+
+            Assert.IsTrue(result.SuggestedMode.HasValue,
+                "Proximity 0 < 50 km → fires ProximityToActiveVessel");
+            Assert.AreEqual(PhysicsMode.PhysXActive, result.SuggestedMode.Value);
+            Assert.AreEqual(TransitionTriggerReason.ProximityToActiveVessel, result.Reason);
+        }
+
+        [Test]
+        public void EvaluateTransitionTriggers_KeplerRails_BeyondProximity_SuggestsStay()
+        {
+            // KeplerRails vessel beyond 50 km of active reference, and none of the
+            // stub disjunctive conditions fire (all stub-false in Phase 0). Result: Stay.
+            var kepler = NewKeplerState();
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+
+            // Active reference at origin; vessel propagated position at (LeoRadius, 0, 0).
+            // Distance = LeoRadius = 7,000,000 m >> 50,000 m threshold.
+            var activeRef = new StubActiveVessel(new WorldPosition(0, 0, 0));
+            TransitionEvaluation result = _vessel.EvaluateTransitionTriggers(activeRef);
+
+            Assert.IsFalse(result.SuggestedMode.HasValue,
+                "Beyond proximity, no other K→P trigger fires → Stay");
+            Assert.AreEqual(TransitionTriggerReason.None, result.Reason);
+        }
+
+        [Test]
+        public void EvaluateTransitionTriggers_KeplerRails_AtmosphericEntryPredicted_SuggestsPhysXActive()
+        {
+            // KeplerRails vessel beyond proximity but with NextModeTransitionTick set
+            // to current+1 (atmospheric entry imminent). Fires AtmosphericEntryPredicted.
+            //
+            // Uses SimTickController.SetInstanceForTesting + SetTickNumberForTesting from
+            // commit 040 to control "current tick" deterministically.
+            _simTickGo = new GameObject("TestSimTick");
+            var controller = _simTickGo.AddComponent<SimTickController>();
+            SimTickController.SetInstanceForTesting(controller);
+            controller.SetTickNumberForTesting(100);
+
+            var kepler = NewKeplerState();
+            kepler.NextModeTransitionTick = 101;  // current (100) + 1
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+
+            // Active reference at origin → vessel propagated position at (LeoRadius, 0, 0)
+            // → proximity = LeoRadius >> 50 km → proximity check passes (doesn't fire).
+            // Next condition (atmospheric entry predicted) should fire.
+            var activeRef = new StubActiveVessel(new WorldPosition(0, 0, 0));
+            TransitionEvaluation result = _vessel.EvaluateTransitionTriggers(activeRef);
+
+            Assert.IsTrue(result.SuggestedMode.HasValue);
+            Assert.AreEqual(PhysicsMode.PhysXActive, result.SuggestedMode.Value);
+            Assert.AreEqual(TransitionTriggerReason.AtmosphericEntryPredicted, result.Reason);
+        }
+
+        [Test]
+        public void EvaluateTransitionTriggers_InterstellarCruise_ReturnsStay()
+        {
+            // InterstellarCruise mode is Phase 6 scope; the evaluator must return Stay.
+            // Initialize forces InterstellarCruise to fall back to PhysXActive, so we
+            // bypass Initialize's mode-rewrite by direct State.Mode assignment (same
+            // pattern as commit 041 tests 11/12).
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.State.Mode = PhysicsMode.InterstellarCruise;
+
+            var activeRef = new StubActiveVessel(new WorldPosition(0, 0, 0));
+            TransitionEvaluation result = _vessel.EvaluateTransitionTriggers(activeRef);
+
+            Assert.IsFalse(result.SuggestedMode.HasValue,
+                "InterstellarCruise is Phase 6 scope → evaluator returns Stay");
+            Assert.AreEqual(TransitionTriggerReason.None, result.Reason);
+        }
+
+        [Test]
+        public void EvaluateTransitionTriggers_NullActiveVessel_ReturnsStay()
+        {
+            // Defensive null check on activeVesselForProximity. Passing null must not
+            // throw; result must be Stay (cannot evaluate proximity without a reference).
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
+
+            TransitionEvaluation result = _vessel.EvaluateTransitionTriggers(activeVesselForProximity: null);
+
+            Assert.IsFalse(result.SuggestedMode.HasValue,
+                "Null active reference → Stay (cannot evaluate proximity)");
+            Assert.AreEqual(TransitionTriggerReason.None, result.Reason);
+        }
+
+        // ----- VesselTransitionDriver tests (commit 043) -----
+
+        /// <summary>
+        /// Helper: construct a SimTickController, register an active vessel stub, and
+        /// initialize the driver. Returns the controller for tests that need direct
+        /// access (e.g., to fire TickAdvanced manually).
+        /// </summary>
+        private SimTickController SetUpDriverWithStubActiveVessel(IActiveVessel activeVessel)
+        {
+            _simTickGo = new GameObject("TestSimTick");
+            var controller = _simTickGo.AddComponent<SimTickController>();
+            SimTickController.SetInstanceForTesting(controller);
+            controller.SetActiveVessel(activeVessel);
+            VesselTransitionDriver.Initialize();
+            return controller;
+        }
+
+        [Test]
+        public void TransitionDriver_DisabledByDefault_DoesNothing()
+        {
+            // Default state: Enabled = false. Firing TickAdvanced (via direct
+            // OnTickAdvanced invocation, since EditMode has no FixedUpdate cycle)
+            // should be a complete no-op — no evaluation, no transition, no counter increment.
+            var stubActive = new StubActiveVessel(new WorldPosition(0, 0, 0));
+            SetUpDriverWithStubActiveVessel(stubActive);
+
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
+            // In EditMode, OnEnable doesn't fire, so the vessel isn't auto-registered.
+            // Initialize itself calls VesselRegistry.RegisterVesselSafe inside the
+            // isActiveAndEnabled guard which IS true in EditMode for newly added
+            // components, so the registration does happen — verify and proceed.
+            Assert.AreEqual(1, VesselRegistry.VesselCount,
+                "Sanity: vessel should be registered after Initialize");
+
+            Assert.IsFalse(VesselTransitionDriver.Enabled,
+                "Sanity: driver should be disabled by default");
+
+            VesselTransitionDriver.OnTickAdvanced(tickNumber: 1);
+
+            Assert.AreEqual(0, VesselTransitionDriver.EvaluationCount,
+                "Disabled driver should not evaluate vessels");
+            Assert.AreEqual(0, VesselTransitionDriver.TransitionCount,
+                "Disabled driver should not transition vessels");
+            Assert.AreEqual(PhysicsMode.PhysXActive, _vessel.Mode,
+                "Disabled driver should not change vessel mode");
+        }
+
+        [Test]
+        public void TransitionDriver_WhenEnabled_EvaluatesVesselsOnTickAdvanced()
+        {
+            // With Enabled = true, OnTickAdvanced iterates registered vessels and calls
+            // EvaluateTransitionTriggers on each. We register one vessel within proximity
+            // (so the evaluation returns Stay rather than firing a transition); the
+            // diagnostic counter should still increment to confirm the call happened.
+            var stubActive = new StubActiveVessel(new WorldPosition(0, 0, 0));
+            SetUpDriverWithStubActiveVessel(stubActive);
+
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.Rigidbody.position = new Vector3(10_000f, 0f, 0f);  // within proximity
+
+            VesselTransitionDriver.Enabled = true;
+            VesselTransitionDriver.OnTickAdvanced(tickNumber: 1);
+
+            Assert.AreEqual(1, VesselTransitionDriver.EvaluationCount,
+                "Enabled driver should evaluate 1 vessel (the one we registered)");
+            Assert.AreEqual(0, VesselTransitionDriver.TransitionCount,
+                "Within-proximity vessel should not transition");
+            Assert.AreEqual(PhysicsMode.PhysXActive, _vessel.Mode);
+        }
+
+        [Test]
+        public void TransitionDriver_WhenEnabled_FiresTransitionForVesselBeyondProximity()
+        {
+            // The end-to-end happy path: enabled driver iterates vessels, finds one
+            // beyond proximity with clean state, fires TransitionToKeplerRails.
+            // Suppress the expected diagnostic log so the test runner doesn't choke.
+            UnityEngine.TestTools.LogAssert.Expect(LogType.Log,
+                new System.Text.RegularExpressions.Regex(".*transitioning PhysXActive → KeplerRails.*"));
+
+            var stubActive = new StubActiveVessel(new WorldPosition(0, 0, 0));
+            SetUpDriverWithStubActiveVessel(stubActive);
+
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
+            float vCircular = (float)math.sqrt(EarthMu / LeoRadius);
+            _vessel.Rigidbody.linearVelocity = new Vector3(0f, vCircular, 0f);
+
+            VesselTransitionDriver.Enabled = true;
+            VesselTransitionDriver.OnTickAdvanced(tickNumber: 1);
+
+            Assert.AreEqual(1, VesselTransitionDriver.EvaluationCount);
+            Assert.AreEqual(1, VesselTransitionDriver.TransitionCount,
+                "Beyond-proximity clean-state vessel should fire a transition");
+            Assert.AreEqual(PhysicsMode.KeplerRails, _vessel.Mode,
+                "Vessel mode should be KeplerRails after driver-invoked transition");
+            Assert.IsNotNull(_vessel.State.KeplerState,
+                "KeplerState should be populated after transition");
+        }
+
+        [Test]
+        public void TransitionDriver_DiagnosticCountersIncrementCorrectly()
+        {
+            // Two-tick scenario: vessel is within proximity → evaluates but doesn't
+            // transition (counter: 1, 0). On second tick, vessel teleported beyond
+            // proximity → evaluates AND transitions (counter: 2, 1).
+            UnityEngine.TestTools.LogAssert.Expect(LogType.Log,
+                new System.Text.RegularExpressions.Regex(".*transitioning PhysXActive → KeplerRails.*"));
+
+            var stubActive = new StubActiveVessel(new WorldPosition(0, 0, 0));
+            SetUpDriverWithStubActiveVessel(stubActive);
+
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.Rigidbody.position = new Vector3(10_000f, 0f, 0f);
+            float vCircular = (float)math.sqrt(EarthMu / LeoRadius);
+
+            VesselTransitionDriver.Enabled = true;
+
+            // Tick 1: within proximity → eval but no transition.
+            VesselTransitionDriver.OnTickAdvanced(tickNumber: 1);
+            Assert.AreEqual(1, VesselTransitionDriver.EvaluationCount);
+            Assert.AreEqual(0, VesselTransitionDriver.TransitionCount);
+
+            // Teleport to LEO (beyond proximity) and apply circular velocity so the
+            // resulting Kepler-rails state is well-defined.
+            _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
+            _vessel.Rigidbody.linearVelocity = new Vector3(0f, vCircular, 0f);
+
+            // Tick 2: beyond proximity → eval AND transition.
+            VesselTransitionDriver.OnTickAdvanced(tickNumber: 2);
+            Assert.AreEqual(2, VesselTransitionDriver.EvaluationCount,
+                "EvaluationCount should be 2 after two ticks");
+            Assert.AreEqual(1, VesselTransitionDriver.TransitionCount,
+                "TransitionCount should be 1 (one transition fired on tick 2)");
+        }
+
+        [Test]
+        public void TransitionDriver_VesselThatThrowsDuringEvaluation_LoopContinues()
+        {
+            // Verify the driver's per-vessel try/catch isolates failures: a throwing
+            // ActiveVessel (whose GetWorldPosition raises an exception) causes every
+            // vessel's evaluation to throw during the proximity-distance check. The
+            // driver should log errors for each but continue iterating. EvaluationCount
+            // increments BEFORE the try-block per the driver implementation, so both
+            // vessels should contribute to the counter even though both throw.
+            //
+            // Two vessels registered: _vessel from SetUp, plus a second one we
+            // construct here. Both should be evaluated; both should throw; both error
+            // logs should fire.
+            UnityEngine.TestTools.LogAssert.Expect(LogType.Error,
+                new System.Text.RegularExpressions.Regex(".*threw during EvaluateTransitionTriggers.*"));
+            UnityEngine.TestTools.LogAssert.Expect(LogType.Error,
+                new System.Text.RegularExpressions.Regex(".*threw during EvaluateTransitionTriggers.*"));
+
+            var throwingActive = new ThrowingActiveVessel();
+            SetUpDriverWithStubActiveVessel(throwingActive);
+
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
+
+            // Add a second vessel (will be auto-registered via Initialize).
+            var secondVesselGo = new GameObject("SecondVessel");
+            var secondVessel = secondVesselGo.AddComponent<Vessel>();
+            secondVessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            try
+            {
+                Assert.AreEqual(2, VesselRegistry.VesselCount, "Sanity: 2 vessels registered");
+
+                VesselTransitionDriver.Enabled = true;
+                VesselTransitionDriver.OnTickAdvanced(tickNumber: 1);
+
+                Assert.AreEqual(2, VesselTransitionDriver.EvaluationCount,
+                    "Both vessels should be attempted (counter increments before try-block)");
+                Assert.AreEqual(0, VesselTransitionDriver.TransitionCount,
+                    "Both vessels threw → no transitions");
+                Assert.AreEqual(PhysicsMode.PhysXActive, _vessel.Mode,
+                    "First vessel mode unchanged after throw");
+                Assert.AreEqual(PhysicsMode.PhysXActive, secondVessel.Mode,
+                    "Second vessel mode unchanged after throw");
+            }
+            finally
+            {
+                UnityObject.DestroyImmediate(secondVesselGo);
+            }
+        }
+
+        [Test]
+        public void TransitionDriver_ActiveVesselNull_SkipsEvaluation()
+        {
+            // No SetActiveVessel call; the controller's ActiveVessel stays null. The
+            // driver should warn-once and skip without evaluating any vessel.
+            UnityEngine.TestTools.LogAssert.Expect(LogType.Warning,
+                new System.Text.RegularExpressions.Regex(".*ActiveVessel is null.*"));
+
+            _simTickGo = new GameObject("TestSimTick");
+            var controller = _simTickGo.AddComponent<SimTickController>();
+            SimTickController.SetInstanceForTesting(controller);
+            // Intentionally NOT calling controller.SetActiveVessel(...)
+            VesselTransitionDriver.Initialize();
+
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
+
+            VesselTransitionDriver.Enabled = true;
+            VesselTransitionDriver.OnTickAdvanced(tickNumber: 1);
+
+            Assert.AreEqual(0, VesselTransitionDriver.EvaluationCount,
+                "Null ActiveVessel → skip evaluation entirely");
+            Assert.AreEqual(0, VesselTransitionDriver.TransitionCount);
+            Assert.AreEqual(PhysicsMode.PhysXActive, _vessel.Mode);
         }
     }
 }
