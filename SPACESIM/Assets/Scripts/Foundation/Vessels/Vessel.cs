@@ -521,6 +521,103 @@ namespace SpaceSim.Foundation.Vessels
             State.KeplerState = null;
         }
 
+        // ----- SOI re-rooting (commit 044) -----
+
+        /// <summary>
+        /// Re-root this vessel's orbital state from its current reference body to
+        /// <paramref name="newBody"/>. Intra-mode operation: vessel stays on
+        /// Kepler-rails before and after; only the reference body and the orbital
+        /// elements change. Operational analog to <see cref="TransitionToKeplerRails"/>
+        /// but no mode transition fires.
+        ///
+        /// PROCEDURE:
+        /// <list type="number">
+        ///   <item>Propagate current orbital state to the current sim-tick to obtain
+        ///   position and velocity relative to the current reference body.</item>
+        ///   <item>Delegate to <see cref="OrbitalElements.ReRootStateVector"/> to
+        ///   transform the state vector into the new body's frame and produce a fresh
+        ///   <see cref="KeplerState"/>.</item>
+        ///   <item>Update <see cref="VesselAuthoritativeState.KeplerState"/>, the
+        ///   cached reference-body field, and <c>LastAdvancedTick</c>.</item>
+        /// </list>
+        ///
+        /// CALLED BY: <see cref="VesselSoiRerootingDriver.OnTickAdvanced"/> when the
+        /// per-tick SOI check detects the vessel has crossed an SOI boundary (outward
+        /// to the parent, or inward into a child body's SOI).
+        ///
+        /// PHASE 4+ VELOCITY HAZARD: the propagated velocity is relative-to-current-body.
+        /// In Phase 1 (stationary bodies), this is identical to absolute world velocity
+        /// and to velocity-relative-to-any-other-body. When bodies orbit (Phase 4+),
+        /// the <see cref="OrbitalElements.ReRootStateVector"/> signature will extend to
+        /// take per-body velocity parameters; this method will need to pass them through.
+        /// See the helper's XML doc for the full migration plan.
+        ///
+        /// PUBLIC for parity with the existing <c>TransitionTo*</c> methods (same
+        /// asmdef-visibility-via-public convention; the production driver lives in the
+        /// Vessels asmdef alongside Vessel). The only intended invokers are
+        /// <see cref="VesselSoiRerootingDriver"/> and EditMode tests; player code and
+        /// other systems should not call this directly.
+        /// </summary>
+        public void ReRootToBody(ReferenceBody newBody)
+        {
+            if (!_initialized)
+            {
+                Debug.LogWarning(
+                    $"Vessel.ReRootToBody on '{gameObject.name}' before Initialize; ignored.");
+                return;
+            }
+            if (newBody == null)
+            {
+                Debug.LogError(
+                    $"Vessel.ReRootToBody on '{gameObject.name}': newBody is null. " +
+                    $"Cannot re-root without a destination body.");
+                return;
+            }
+            if (State.Mode != PhysicsMode.KeplerRails)
+            {
+                Debug.LogError(
+                    $"Vessel.ReRootToBody on '{gameObject.name}': vessel is in {State.Mode} " +
+                    $"mode, not KeplerRails. SOI re-rooting is intra-Kepler-rails only.");
+                return;
+            }
+            if (State.KeplerState == null)
+            {
+                Debug.LogError(
+                    $"Vessel.ReRootToBody on '{gameObject.name}': KeplerState is null. " +
+                    $"State is inconsistent (Mode == KeplerRails should imply KeplerState != null).");
+                return;
+            }
+
+            long currentTick = SimTickController.Instance != null
+                ? SimTickController.Instance.TickNumber
+                : State.KeplerState.EpochTick;
+
+            // Propagate current orbital state forward to obtain (position, velocity)
+            // relative to the current reference body at the current tick. Mirrors the
+            // pattern in TransitionToPhysXActive (commit 040).
+            (double3 relPosition, double3 relVelocity) = KeplerPropagator.PropagateState(
+                State.KeplerState, currentTick, _referenceBody.Mu,
+                SimTickController.SimTickIntervalSeconds);
+
+            // Delegate to the orbital-math helper. Phase 1: velocity passes through
+            // unchanged because both bodies are stationary in this prototype.
+            KeplerState newKeplerState = OrbitalElements.ReRootStateVector(
+                currentPositionRelativeToCurrentBody: relPosition,
+                currentVelocity: relVelocity,
+                currentBodyPositionWorld: _referenceBody.PositionWorld,
+                newBodyPositionWorld: newBody.PositionWorld,
+                newBodyMu: newBody.Mu,
+                epochTick: currentTick,
+                newBodyId: newBody.BodyId);
+
+            // Commit the new state. Cached _referenceBody updates so subsequent calls
+            // (GetWorldPosition, EvaluateTransitionTriggers, propagator queries) use the
+            // new body's μ and position automatically.
+            State.KeplerState = newKeplerState;
+            _referenceBody = newBody;
+            State.LastAdvancedTick = currentTick;
+        }
+
         // ----- Position accessor -----
 
         /// <summary>

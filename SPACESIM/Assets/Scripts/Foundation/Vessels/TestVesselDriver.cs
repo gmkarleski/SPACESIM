@@ -123,6 +123,15 @@ namespace SpaceSim.Foundation.Vessels
             // flag to true. Phase 0 / early Phase 1 expects the flag to stay off; Space-key
             // transitions and other imperative calls continue to drive mode changes.
             VesselTransitionDriver.Initialize();
+
+            // Wire up the per-sim-tick SOI re-rooting driver (commit 044). Unlike
+            // VesselTransitionDriver, this driver has no Enabled flag — SOI re-rooting
+            // has real implementation (not stubs), so always-on is the right default.
+            // In the single-body TestVessels.unity scene, the re-rooting check runs
+            // every tick and correctly finds no crossings (vessel inside top-level
+            // body's infinite SOI; no children to enter). The Console will show no
+            // re-rooting log messages during Play with this scene.
+            VesselSoiRerootingDriver.Initialize();
         }
 
         private void Update()

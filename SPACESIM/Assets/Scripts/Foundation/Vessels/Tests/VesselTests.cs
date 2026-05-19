@@ -49,9 +49,11 @@ namespace SpaceSim.Foundation.Vessels.Tests
         public void SetUp()
         {
             VesselRegistry.ClearForTesting();
+            BodyRegistry.ClearForTesting();
             FloatingOriginManager.ClearInstanceForTesting();
             SimTickController.ClearInstanceForTesting();
             VesselTransitionDriver.Shutdown();
+            VesselSoiRerootingDriver.Shutdown();
 
             // ReferenceBody MonoBehaviour. Awake doesn't fire in EditMode, so the body's
             // BodyId stays Guid.Empty and PositionWorld stays default(WorldPosition).
@@ -79,9 +81,11 @@ namespace SpaceSim.Foundation.Vessels.Tests
             if (_simTickGo != null) UnityObject.DestroyImmediate(_simTickGo);
 
             VesselRegistry.ClearForTesting();
+            BodyRegistry.ClearForTesting();
             FloatingOriginManager.ClearInstanceForTesting();
             SimTickController.ClearInstanceForTesting();
             VesselTransitionDriver.Shutdown();
+            VesselSoiRerootingDriver.Shutdown();
         }
 
         // ----- Helpers -----
@@ -1582,6 +1586,488 @@ namespace SpaceSim.Foundation.Vessels.Tests
                 "Null ActiveVessel → skip evaluation entirely");
             Assert.AreEqual(0, VesselTransitionDriver.TransitionCount);
             Assert.AreEqual(PhysicsMode.PhysXActive, _vessel.Mode);
+        }
+
+        // ----- ReferenceBody SOI schema (commit 044 Stage 1) -----
+
+        [Test]
+        public void ReferenceBody_Awake_PopulatesParentBodyId_WhenParentSet()
+        {
+            // Set up a parent body (separate GameObject from the SetUp's _body) and wire
+            // it into a child body via reflection on the private serialized field.
+            // EditMode tests can't go through the Inspector; reflection is the cleanest
+            // way to populate [SerializeField] private fields in tests.
+            var parentGo = new GameObject("ParentBody");
+            var parentBody = parentGo.AddComponent<ReferenceBody>();
+            try
+            {
+                var childGo = new GameObject("ChildBody");
+                var childBody = childGo.AddComponent<ReferenceBody>();
+                try
+                {
+                    var parentBodyField = typeof(ReferenceBody).GetField(
+                        "parentBody",
+                        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    parentBodyField.SetValue(childBody, parentBody);
+
+                    // Initialize parent first so its BodyId is populated before child reads it.
+                    parentBody.InitializeBodyForTesting();
+                    childBody.InitializeBodyForTesting();
+
+                    Assert.AreNotEqual(Guid.Empty, parentBody.BodyId,
+                        "Sanity: parent's BodyId should be populated");
+                    Assert.AreEqual(parentBody.BodyId, childBody.ParentBodyId,
+                        "Child's ParentBodyId should match parent's BodyId");
+                    Assert.AreSame(parentBody, childBody.ParentBody,
+                        "Child's ParentBody reference should point at the parent");
+                }
+                finally
+                {
+                    UnityObject.DestroyImmediate(childGo);
+                }
+            }
+            finally
+            {
+                UnityObject.DestroyImmediate(parentGo);
+            }
+        }
+
+        [Test]
+        public void ReferenceBody_Awake_LeavesParentBodyIdEmpty_WhenNoParent()
+        {
+            // SetUp's _body has no parent set (parentBody Inspector field defaults null).
+            // Invoke InitializeBodyForTesting and verify the top-level body convention:
+            // ParentBody == null, ParentBodyId == Guid.Empty.
+            _body.InitializeBodyForTesting();
+
+            Assert.IsNull(_body.ParentBody,
+                "Body with no parent wired should have ParentBody == null (top-level)");
+            Assert.AreEqual(Guid.Empty, _body.ParentBodyId,
+                "Body with no parent wired should have ParentBodyId == Guid.Empty");
+        }
+
+        [Test]
+        public void ReferenceBody_SoiRadiusMeters_DefaultsToInfinity()
+        {
+            // Default Inspector value for soiRadiusMeters is double.PositiveInfinity
+            // (top-level body convention). InitializeBodyForTesting doesn't touch the
+            // field; the default applies.
+            _body.InitializeBodyForTesting();
+
+            Assert.AreEqual(double.PositiveInfinity, _body.SoiRadiusMeters,
+                "Default SoiRadiusMeters should be PositiveInfinity (top-level body)");
+        }
+
+        [Test]
+        public void ReferenceBody_SoiRadiusMeters_ReadsInspectorValue()
+        {
+            // Reflection-set the private soiRadiusMeters field to a finite value
+            // (simulating Inspector wiring), then verify the property reads it back.
+            var soiField = typeof(ReferenceBody).GetField(
+                "soiRadiusMeters",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            soiField.SetValue(_body, 6.6e8);  // ~660,000 km, Moon-like SOI
+
+            _body.InitializeBodyForTesting();
+
+            Assert.AreEqual(6.6e8, _body.SoiRadiusMeters,
+                "Property should return the Inspector-set finite value");
+        }
+
+        [Test]
+        public void ReferenceBody_Awake_WithSelfAsParent_LogsErrorAndTreatsAsTopLevel()
+        {
+            // Defensive check: if the Inspector wires a body as its own parent,
+            // Awake/InitializeBodyForTesting should log an error and treat the body
+            // as top-level (ParentBody = null, ParentBodyId = Empty). The cycle
+            // would otherwise produce bogus orbital re-rooting computations.
+            UnityEngine.TestTools.LogAssert.Expect(LogType.Error,
+                new System.Text.RegularExpressions.Regex(".*Inspector wires this body as its own parent.*"));
+
+            var parentBodyField = typeof(ReferenceBody).GetField(
+                "parentBody",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            parentBodyField.SetValue(_body, _body);  // self-cycle
+
+            _body.InitializeBodyForTesting();
+
+            Assert.IsNull(_body.ParentBody,
+                "Self-cycle should be rejected; ParentBody should be null (top-level fallback)");
+            Assert.AreEqual(Guid.Empty, _body.ParentBodyId,
+                "Self-cycle should be rejected; ParentBodyId should be Empty");
+        }
+
+        // ----- SOI re-rooting (commit 044 Stage 3) -----
+        //
+        // Earth-Moon test substrate. Constructed per-test via a helper to avoid
+        // bleeding into the SetUp's single-body baseline.
+
+        private const double EarthMoonDistanceMeters = 3.844e8;
+        private const double MoonMassKg = 7.342e22;
+        private const double MoonSoiRadiusMeters = 6.6e7;  // Real Moon SOI ~66,100 km
+
+        /// <summary>
+        /// Build an Earth-Moon test substrate. The default SetUp's <c>_body</c> stays as
+        /// "Earth" at world origin with infinite SOI (top-level body); this helper adds
+        /// a "Moon" ReferenceBody at the Earth-Moon offset with finite SOI and
+        /// _body as parent. Returns the Moon body so the test can wire it as a re-root
+        /// target.
+        /// </summary>
+        private ReferenceBody BuildMoonAsChildOfEarth()
+        {
+            var moonGo = new GameObject("Moon");
+            moonGo.transform.position = new Vector3((float)EarthMoonDistanceMeters, 0, 0);
+            var moon = moonGo.AddComponent<ReferenceBody>();
+
+            // Set Moon's mass via reflection (the [SerializeField] private massKg field).
+            var massField = typeof(ReferenceBody).GetField(
+                "massKg",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            massField.SetValue(moon, MoonMassKg);
+
+            // Set Moon's SOI radius via reflection.
+            var soiField = typeof(ReferenceBody).GetField(
+                "soiRadiusMeters",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            soiField.SetValue(moon, MoonSoiRadiusMeters);
+
+            // Wire _body (Earth) as Moon's parent.
+            var parentField = typeof(ReferenceBody).GetField(
+                "parentBody",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            parentField.SetValue(moon, _body);
+
+            // Make sure Earth's BodyId is populated before Moon resolves its parent.
+            _body.InitializeBodyForTesting();
+            moon.InitializeBodyForTesting();
+
+            return moon;
+        }
+
+        // ----- Vessel.ReRootToBody direct tests -----
+
+        [Test]
+        public void ReRootToBody_FromKeplerRails_UpdatesReferenceBody()
+        {
+            // Set up Earth-rooted vessel, then re-root to Moon. Verify the cached
+            // _referenceBody and the schema's ReferenceBodyId both update.
+            var moon = BuildMoonAsChildOfEarth();
+            try
+            {
+                var kepler = NewKeplerState();
+                _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+
+                Assert.AreSame(_body, _vessel.ReferenceBody, "Sanity: vessel starts Earth-rooted");
+
+                _vessel.ReRootToBody(moon);
+
+                Assert.AreSame(moon, _vessel.ReferenceBody,
+                    "Cached reference body should update to Moon");
+                Assert.AreEqual(moon.BodyId, _vessel.State.KeplerState.ReferenceBodyId,
+                    "Schema ReferenceBodyId should match Moon's BodyId");
+            }
+            finally
+            {
+                UnityObject.DestroyImmediate(moon.gameObject);
+            }
+        }
+
+        [Test]
+        public void ReRootToBody_FromKeplerRails_PreservesPositionContinuity()
+        {
+            // The vessel's world position should be continuous across re-rooting.
+            // Re-rooting just changes the reference frame; the vessel doesn't teleport.
+            var moon = BuildMoonAsChildOfEarth();
+            try
+            {
+                var kepler = NewKeplerState();  // LEO around Earth
+                _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+
+                WorldPosition posBefore = _vessel.GetWorldPosition();
+                _vessel.ReRootToBody(moon);
+                WorldPosition posAfter = _vessel.GetWorldPosition();
+
+                // Tolerance: 1 m absolute at LEO scale (~7e6 m magnitude). Re-rooting
+                // composes one position subtraction + orbital-elements round-trip.
+                double dx = posBefore.Value.x - posAfter.Value.x;
+                double dy = posBefore.Value.y - posAfter.Value.y;
+                double dz = posBefore.Value.z - posAfter.Value.z;
+                double diff = math.sqrt(dx * dx + dy * dy + dz * dz);
+
+                Assert.Less(diff, 1.0,
+                    $"Position should be continuous across re-rooting; diff = {diff:F3} m");
+            }
+            finally
+            {
+                UnityObject.DestroyImmediate(moon.gameObject);
+            }
+        }
+
+        [Test]
+        public void ReRootToBody_BeforeInitialize_LogsWarningAndNoOps()
+        {
+            // Pre-Initialize vessel. The guard at the top of ReRootToBody should fire.
+            var moon = BuildMoonAsChildOfEarth();
+            try
+            {
+                UnityEngine.TestTools.LogAssert.Expect(LogType.Warning,
+                    new System.Text.RegularExpressions.Regex(".*before Initialize; ignored.*"));
+
+                _vessel.ReRootToBody(moon);
+
+                // No state assertions — State is null pre-Initialize, can't dereference.
+                // The expected log firing is the test assertion.
+            }
+            finally
+            {
+                UnityObject.DestroyImmediate(moon.gameObject);
+            }
+        }
+
+        [Test]
+        public void ReRootToBody_WhenPhysXActive_LogsErrorAndNoOps()
+        {
+            // PhysXActive vessel. ReRootToBody is intra-Kepler-rails only.
+            var moon = BuildMoonAsChildOfEarth();
+            try
+            {
+                _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+
+                UnityEngine.TestTools.LogAssert.Expect(LogType.Error,
+                    new System.Text.RegularExpressions.Regex(".*not KeplerRails. SOI re-rooting is intra-Kepler-rails only.*"));
+
+                _vessel.ReRootToBody(moon);
+
+                // Mode unchanged; cached reference unchanged.
+                Assert.AreEqual(PhysicsMode.PhysXActive, _vessel.Mode);
+                Assert.AreSame(_body, _vessel.ReferenceBody);
+            }
+            finally
+            {
+                UnityObject.DestroyImmediate(moon.gameObject);
+            }
+        }
+
+        [Test]
+        public void ReRootToBody_WhenKeplerStateNull_LogsErrorAndNoOps()
+        {
+            // Construct the inconsistent state directly: Initialize in PhysXActive
+            // (KeplerState stays null), force Mode = KeplerRails. Then ReRootToBody
+            // should hit the KeplerState-null guard.
+            var moon = BuildMoonAsChildOfEarth();
+            try
+            {
+                _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+                _vessel.State.Mode = PhysicsMode.KeplerRails;
+                _vessel.State.KeplerState = null;
+
+                UnityEngine.TestTools.LogAssert.Expect(LogType.Error,
+                    new System.Text.RegularExpressions.Regex(".*KeplerState is null.*State is inconsistent.*"));
+
+                _vessel.ReRootToBody(moon);
+
+                Assert.AreSame(_body, _vessel.ReferenceBody,
+                    "Reference body should be unchanged after rejected re-root");
+            }
+            finally
+            {
+                UnityObject.DestroyImmediate(moon.gameObject);
+            }
+        }
+
+        [Test]
+        public void ReRootToBody_WhenNewBodyNull_LogsErrorAndNoOps()
+        {
+            var kepler = NewKeplerState();
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+
+            UnityEngine.TestTools.LogAssert.Expect(LogType.Error,
+                new System.Text.RegularExpressions.Regex(".*newBody is null.*"));
+
+            _vessel.ReRootToBody(null);
+
+            Assert.AreSame(_body, _vessel.ReferenceBody,
+                "Reference body should be unchanged after rejected re-root");
+        }
+
+        // ----- VesselSoiRerootingDriver tests -----
+
+        [Test]
+        public void SoiRerootingDriver_VesselWithinSoi_DoesNotReroot()
+        {
+            // Earth-Moon multi-body world. Vessel deep inside Moon's SOI (close to
+            // Moon center). The driver should evaluate the vessel and find no
+            // crossings: distance to Moon < Moon SOI (so no outward re-root); no
+            // children of Moon to enter inward.
+            var moon = BuildMoonAsChildOfEarth();
+            try
+            {
+                // SimTickController needed for the driver. Construct + claim Instance.
+                _simTickGo = new GameObject("TestSimTick");
+                var controller = _simTickGo.AddComponent<SimTickController>();
+                SimTickController.SetInstanceForTesting(controller);
+
+                // Vessel orbiting Moon at 1000 km altitude. Position relative to Moon
+                // (in Moon's frame, since vessel will be Moon-rooted).
+                var moonOrbit = new KeplerState
+                {
+                    SemiMajorAxis = 2_737_000.0,  // Moon radius (1737km) + 1000 km altitude
+                    Eccentricity = 0.0,
+                    Inclination = 0.0,
+                    LongitudeOfAscendingNode = 0.0,
+                    ArgumentOfPeriapsis = 0.0,
+                    TrueAnomalyAtEpoch = 0.0,
+                    EpochTick = 0,
+                    ReferenceBodyId = moon.BodyId,
+                };
+                _vessel.Initialize(NewState(), moon, PhysicsMode.KeplerRails, moonOrbit);
+
+                VesselSoiRerootingDriver.OnTickAdvanced(tickNumber: 1);
+
+                Assert.AreEqual(1, VesselSoiRerootingDriver.EvaluationCount,
+                    "Driver should have evaluated 1 vessel");
+                Assert.AreEqual(0, VesselSoiRerootingDriver.RerootingCount,
+                    "Vessel inside SOI with no child crossings should NOT re-root");
+                Assert.AreSame(moon, _vessel.ReferenceBody,
+                    "Vessel should remain Moon-rooted");
+            }
+            finally
+            {
+                UnityObject.DestroyImmediate(moon.gameObject);
+            }
+        }
+
+        [Test]
+        public void SoiRerootingDriver_VesselBeyondSoi_RerootsToParent()
+        {
+            // Vessel currently Moon-rooted but at a distance from Moon that exceeds
+            // Moon's SOI. The driver should detect the outward crossing and re-root
+            // to Earth (Moon's parent).
+            var moon = BuildMoonAsChildOfEarth();
+            try
+            {
+                UnityEngine.TestTools.LogAssert.Expect(LogType.Log,
+                    new System.Text.RegularExpressions.Regex(".*exited SOI of 'Moon'.*re-rooting to parent 'TestReferenceBody'.*"));
+
+                _simTickGo = new GameObject("TestSimTick");
+                var controller = _simTickGo.AddComponent<SimTickController>();
+                SimTickController.SetInstanceForTesting(controller);
+
+                // Vessel orbit around Moon with SMA > Moon SOI. The propagator at
+                // ν₀ = 0 puts the vessel at periapsis = a(1-e); with e=0 and a=1e8 m,
+                // periapsis = 1e8 m, well beyond Moon SOI (6.6e7 m).
+                var moonEscapeOrbit = new KeplerState
+                {
+                    SemiMajorAxis = 1.0e8,
+                    Eccentricity = 0.0,
+                    Inclination = 0.0,
+                    LongitudeOfAscendingNode = 0.0,
+                    ArgumentOfPeriapsis = 0.0,
+                    TrueAnomalyAtEpoch = 0.0,
+                    EpochTick = 0,
+                    ReferenceBodyId = moon.BodyId,
+                };
+                _vessel.Initialize(NewState(), moon, PhysicsMode.KeplerRails, moonEscapeOrbit);
+
+                VesselSoiRerootingDriver.OnTickAdvanced(tickNumber: 1);
+
+                Assert.AreEqual(1, VesselSoiRerootingDriver.EvaluationCount);
+                Assert.AreEqual(1, VesselSoiRerootingDriver.RerootingCount,
+                    "Vessel beyond Moon SOI should re-root to parent (Earth)");
+                Assert.AreSame(_body, _vessel.ReferenceBody,
+                    "Vessel should now be Earth-rooted");
+                Assert.AreEqual(_body.BodyId, _vessel.State.KeplerState.ReferenceBodyId);
+            }
+            finally
+            {
+                UnityObject.DestroyImmediate(moon.gameObject);
+            }
+        }
+
+        [Test]
+        public void SoiRerootingDriver_VesselEntersChildSoi_RerootsToChild()
+        {
+            // Vessel currently Earth-rooted with an orbit that passes near the Moon
+            // (within Moon's SOI). The driver should detect the inward crossing and
+            // re-root to Moon.
+            var moon = BuildMoonAsChildOfEarth();
+            try
+            {
+                UnityEngine.TestTools.LogAssert.Expect(LogType.Log,
+                    new System.Text.RegularExpressions.Regex(".*entered SOI of 'Moon'.*"));
+
+                _simTickGo = new GameObject("TestSimTick");
+                var controller = _simTickGo.AddComponent<SimTickController>();
+                SimTickController.SetInstanceForTesting(controller);
+
+                // Construct a circular Earth orbit at Earth-Moon distance, with ν₀
+                // such that the vessel is at the Moon's exact angular position. The
+                // vessel will be at (EarthMoonDistance, 0, 0) in Earth frame —
+                // co-located with the Moon — comfortably inside Moon's SOI.
+                var earthOrbitAtMoonPosition = new KeplerState
+                {
+                    SemiMajorAxis = EarthMoonDistanceMeters,
+                    Eccentricity = 0.0,
+                    Inclination = 0.0,
+                    LongitudeOfAscendingNode = 0.0,
+                    ArgumentOfPeriapsis = 0.0,
+                    TrueAnomalyAtEpoch = 0.0,
+                    EpochTick = 0,
+                    ReferenceBodyId = _body.BodyId,
+                };
+                _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, earthOrbitAtMoonPosition);
+
+                VesselSoiRerootingDriver.OnTickAdvanced(tickNumber: 1);
+
+                Assert.AreEqual(1, VesselSoiRerootingDriver.EvaluationCount);
+                Assert.AreEqual(1, VesselSoiRerootingDriver.RerootingCount,
+                    "Vessel inside Moon's SOI should re-root to Moon");
+                Assert.AreSame(moon, _vessel.ReferenceBody);
+            }
+            finally
+            {
+                UnityObject.DestroyImmediate(moon.gameObject);
+            }
+        }
+
+        [Test]
+        public void SoiRerootingDriver_VesselWithNoParent_DoesNotRerootOutward()
+        {
+            // Top-level body (Earth in SetUp) has SoiRadiusMeters = PositiveInfinity
+            // and ParentBody == null. A vessel orbiting Earth — no matter how far —
+            // should never trigger outward re-rooting because there's no parent to
+            // re-root to AND the infinite SOI guarantees distance < SOI for any
+            // finite distance.
+            _simTickGo = new GameObject("TestSimTick");
+            var controller = _simTickGo.AddComponent<SimTickController>();
+            SimTickController.SetInstanceForTesting(controller);
+
+            // Initialize Earth (the SetUp _body) so its top-level state is in place.
+            _body.InitializeBodyForTesting();
+
+            // Vessel on an extremely wide orbit around Earth — SMA 1e10 m, far beyond
+            // any plausible SOI of a real planet. Should not trigger any re-rooting
+            // because Earth has infinite SOI.
+            var wideOrbit = new KeplerState
+            {
+                SemiMajorAxis = 1.0e10,
+                Eccentricity = 0.0,
+                Inclination = 0.0,
+                LongitudeOfAscendingNode = 0.0,
+                ArgumentOfPeriapsis = 0.0,
+                TrueAnomalyAtEpoch = 0.0,
+                EpochTick = 0,
+                ReferenceBodyId = _body.BodyId,
+            };
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, wideOrbit);
+
+            VesselSoiRerootingDriver.OnTickAdvanced(tickNumber: 1);
+
+            Assert.AreEqual(1, VesselSoiRerootingDriver.EvaluationCount);
+            Assert.AreEqual(0, VesselSoiRerootingDriver.RerootingCount,
+                "Vessel orbiting a top-level body (infinite SOI, no parent) should never re-root outward");
+            Assert.AreSame(_body, _vessel.ReferenceBody,
+                "Vessel should remain top-level-rooted");
         }
     }
 }

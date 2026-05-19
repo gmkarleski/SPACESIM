@@ -1,4 +1,5 @@
 using System;
+using SpaceSim.Foundation.Coordinates;
 using Unity.Mathematics;
 
 namespace SpaceSim.Foundation.Vessels
@@ -295,6 +296,133 @@ namespace SpaceSim.Foundation.Vessels
                 r31 * vPerifocal.x + r32 * vPerifocal.y + r33 * vPerifocal.z);
 
             return (positionInertial, velocityInertial);
+        }
+
+        /// <summary>
+        /// Re-root a vessel's state vector from one reference body's frame to another's,
+        /// computing the new <see cref="KeplerState"/> in the destination body's frame.
+        /// Used by SOI re-rooting (commit 044) when a vessel crosses an SOI boundary
+        /// inward (into a child body) or outward (back to a parent body).
+        ///
+        /// <para>ALGORITHM:</para>
+        /// <list type="number">
+        ///   <item>Compute the vessel's absolute world position by adding its current
+        ///   relative position to the current body's world position.</item>
+        ///   <item>Subtract the new body's world position from the absolute world
+        ///   position to obtain the vessel's position relative to the new body.</item>
+        ///   <item>Velocity passes through unchanged (see Phase 1 limitation below).</item>
+        ///   <item>Call <see cref="ComputeFromStateVector"/> with the new relative
+        ///   position, the unchanged velocity, the new body's μ, the supplied epoch
+        ///   tick, and the new body's UUID to produce the new <see cref="KeplerState"/>.</item>
+        /// </list>
+        ///
+        /// <para>WHY POSITION TRANSFORMS BUT VELOCITY DOES NOT (PHASE 1):</para>
+        /// A vessel's position is defined relative to a body's origin; changing the
+        /// reference body changes the origin and so the position vector changes. A
+        /// vessel's velocity in an inertial frame is unaffected by the choice of origin
+        /// <em>so long as the new origin is itself stationary in that inertial frame</em>.
+        /// In Phase 1, all bodies are stationary (positions captured once at Awake;
+        /// never updated). So the velocity vector relative to body A equals the
+        /// velocity vector relative to body B, regardless of A and B's positions. The
+        /// math reflects this by passing <paramref name="currentVelocity"/> through
+        /// unchanged.
+        ///
+        /// <para>⚠ PHASE 4+ HAZARD — POSITION CACHING:</para>
+        /// This helper reads <paramref name="currentBodyPositionWorld"/> and
+        /// <paramref name="newBodyPositionWorld"/> as instantaneous values. In Phase 4+
+        /// when bodies orbit, this method must be called fresh each evaluation, never
+        /// with cached body positions. Caching either body position across ticks will
+        /// produce drifting orbital elements as the body moves. Each call must read
+        /// body positions fresh from <see cref="ReferenceBody.PositionWorld"/> (or
+        /// equivalent) at the moment of the call. Holding a <see cref="WorldPosition"/>
+        /// value across ticks and passing it in to a later re-rooting call will
+        /// produce orbital elements that drift away from the body's true position by
+        /// the body's traveled distance over that interval.
+        ///
+        /// <para>⚠ PHASE 4+ HAZARD — VELOCITY:</para>
+        /// The Phase 1 implementation treats both body velocities as zero. In Phase 4+
+        /// when bodies orbit, the caller must pass <c>newBodyVelocityWorld</c> and
+        /// <c>currentBodyVelocityWorld</c> parameters so the vessel's velocity can be
+        /// re-expressed in the new body's reference frame as
+        /// <c>vesselVelocityAbsolute - newBodyVelocityWorld</c>, where
+        /// <c>vesselVelocityAbsolute = currentVelocity + currentBodyVelocityWorld</c>.
+        /// The current signature does not accept these parameters and silently treats
+        /// them as zero. Extending the signature when bodies orbit is the correct fix;
+        /// callers should NOT compensate manually because that distributes the
+        /// correction across every callsite.
+        ///
+        /// <para>ROUND-TRIP PROPERTY:</para>
+        /// Re-rooting from body A to body B, then back to body A (with the same body
+        /// positions and the velocity unchanged), should produce orbital elements
+        /// equivalent to the original within numerical precision. The position
+        /// arithmetic is two double-precision additions and two subtractions; the
+        /// dominant error source is the round-trip through
+        /// <see cref="ComputeFromStateVector"/> and back, which at LEO+ scales has
+        /// shown stable behavior to ~1e-6 m position and ~1e-6 m/s velocity in the
+        /// existing commit 040 round-trip tests.
+        /// </summary>
+        /// <param name="currentPositionRelativeToCurrentBody">
+        /// Vessel's position relative to the current body, in meters (from the
+        /// vessel's current <see cref="KeplerState"/> propagation, or equivalent).
+        /// </param>
+        /// <param name="currentVelocity">
+        /// Vessel's velocity in the inertial frame, in m/s. In Phase 1 this is identical
+        /// to the velocity relative to either body (bodies are stationary).
+        /// </param>
+        /// <param name="currentBodyPositionWorld">
+        /// Current body's position in world coordinates. Must be read fresh per call
+        /// in Phase 4+ — see hazard note above.
+        /// </param>
+        /// <param name="newBodyPositionWorld">
+        /// New (destination) body's position in world coordinates. Same caching hazard
+        /// in Phase 4+.
+        /// </param>
+        /// <param name="newBodyMu">
+        /// New body's standard gravitational parameter μ = G · M, in m³/s².
+        /// </param>
+        /// <param name="epochTick">
+        /// Sim-tick at which the re-rooted orbital elements are anchored. Typically the
+        /// current sim-tick when SOI re-rooting fires.
+        /// </param>
+        /// <param name="newBodyId">
+        /// UUID of the new body, copied into the output <see cref="KeplerState.ReferenceBodyId"/>.
+        /// </param>
+        /// <returns>
+        /// A new <see cref="KeplerState"/> describing the vessel's orbit in the new
+        /// body's frame. Event-prediction fields (NextPeriapsisTick etc.) left null per
+        /// Phase 0 / Phase 1 scope.
+        /// </returns>
+        public static KeplerState ReRootStateVector(
+            double3 currentPositionRelativeToCurrentBody,
+            double3 currentVelocity,
+            WorldPosition currentBodyPositionWorld,
+            WorldPosition newBodyPositionWorld,
+            double newBodyMu,
+            long epochTick,
+            Guid newBodyId)
+        {
+            // Step 1: vessel's absolute world position. The current body's world
+            // position plus the vessel's offset from it.
+            double3 absoluteWorldPos = currentBodyPositionWorld.Value
+                + currentPositionRelativeToCurrentBody;
+
+            // Step 2: vessel's position relative to the new body. Subtract the new
+            // body's world position from the absolute. Phase 1: this is the only
+            // coordinate-frame transform needed (positions only).
+            double3 newRelativePos = absoluteWorldPos - newBodyPositionWorld.Value;
+
+            // Step 3: velocity passes through unchanged. See "WHY POSITION TRANSFORMS
+            // BUT VELOCITY DOES NOT" in the XML doc above for the Phase 1 reasoning,
+            // and the "PHASE 4+ HAZARD — VELOCITY" note for what changes when bodies
+            // orbit.
+
+            // Step 4: compute orbital elements in the new frame.
+            return ComputeFromStateVector(
+                newRelativePos,
+                currentVelocity,
+                newBodyMu,
+                epochTick,
+                newBodyId);
         }
 
         /// <summary>

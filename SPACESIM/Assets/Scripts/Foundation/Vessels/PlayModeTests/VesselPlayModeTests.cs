@@ -46,6 +46,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
         public void SetUp()
         {
             VesselRegistry.ClearForTesting();
+            BodyRegistry.ClearForTesting();
             FloatingOriginManager.ClearInstanceForTesting();
             SimTickController.ClearInstanceForTesting();
         }
@@ -57,6 +58,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
             if (_bodyGo != null) UnityObject.DestroyImmediate(_bodyGo);
             if (_managerGo != null) UnityObject.DestroyImmediate(_managerGo);
             VesselRegistry.ClearForTesting();
+            BodyRegistry.ClearForTesting();
             FloatingOriginManager.ClearInstanceForTesting();
             SimTickController.ClearInstanceForTesting();
         }

@@ -5,24 +5,46 @@ using UnityEngine;
 namespace SpaceSim.Foundation.Vessels
 {
     /// <summary>
-    /// Phase 0 stub representing a single gravity-attracting body (planet, moon, or star)
-    /// for orbital math purposes.
+    /// Single gravity-attracting body (planet, moon, or star) for orbital math purposes.
     ///
-    /// PHASE 0 SCOPE: this class captures only the minimum a vessel's Kepler-rails state
-    /// needs to compute orbital elements: the body's identity, mass, and world position.
-    /// Full body state per <c>docs/NETCODE_CONTRACT.md</c> §2.6 (axial tilt, rotation rate,
-    /// surface terrain seed, atmospheric profile, SOI radius, child bodies) is deferred to
-    /// the procgen-bodies work in Phase 4.
+    /// PHASE 0 / EARLY PHASE 1 SCOPE: this class captures the identity, mass, position, and
+    /// SOI structure a vessel's Kepler-rails state needs to compute orbital elements AND
+    /// perform SOI re-rooting at boundary crossings (commit 044).
+    ///
+    /// SOI STRUCTURE (added at commit 044):
+    /// Each body has a sphere-of-influence radius (<see cref="SoiRadiusMeters"/>) and an
+    /// optional parent body (<see cref="ParentBody"/> / <see cref="ParentBodyId"/>).
+    /// Top-level bodies (e.g., the star at the root of the home system) have no parent;
+    /// their SOI radius is <see cref="double.PositiveInfinity"/> by convention — the
+    /// re-rooting check on a top-level body always says "still inside SOI" because no
+    /// finite distance exceeds infinity. Mathematically clean for patched conics: a body
+    /// with no parent has no SOI boundary within its system.
+    ///
+    /// PHASE 4+ DEFERRED: full body state (axial tilt, rotation rate, surface terrain
+    /// seed, atmospheric profile, child bodies list reactively-maintained, orbital state
+    /// for bodies that themselves orbit) lands with the procgen-bodies work. The
+    /// SoiRadiusMeters value is hand-set per body in Phase 1 (Inspector field); in
+    /// Phase 4+ when bodies orbit, the value will be computed via the Laplace sphere
+    /// formula <c>r_SOI ≈ a · (m/M)^(2/5)</c> where <c>a</c> is the body's semi-major
+    /// axis around its parent and <c>m</c>/<c>M</c> are the body and parent masses.
+    /// Phase 0 bodies don't orbit, so <c>a</c> doesn't exist and computed values aren't
+    /// possible yet.
     ///
     /// For the Phase 0 test scene, a single <see cref="ReferenceBody"/> represents the
-    /// "home planet" at world-origin with Earth-like mass. Multi-body scenes arrive when
-    /// the home system gets populated with its four intensive-craft bodies (per commit 021)
-    /// during Phase 4 procgen work.
+    /// "home planet" at world-origin with Earth-like mass and infinite SOI (no parent).
+    /// Multi-body scenes arrive when the home system gets populated with its four
+    /// intensive-craft bodies (per commit 021) during Phase 4 procgen work.
     ///
     /// The class is a <see cref="MonoBehaviour"/> rather than a plain data class so test
     /// scenes can drop a ReferenceBody GameObject into the Hierarchy and the Vessel
-    /// component can reference it via Inspector wiring. When the real BodyState lands, the
-    /// MonoBehaviour wrapper survives; the data fields gain depth.
+    /// component can reference it via Inspector wiring. When the real BodyState lands
+    /// (per <c>docs/NETCODE_CONTRACT.md</c> §2.7 as of commit 044), the MonoBehaviour
+    /// wrapper survives; the data fields gain depth.
+    ///
+    /// REGISTRY: on <see cref="Awake"/>, the body registers with <see cref="BodyRegistry"/>.
+    /// On <see cref="OnDestroy"/>, it unregisters. Self-registration matches the pattern
+    /// in <c>VesselRegistry</c>. The registry lets re-rooting math look up parent and
+    /// child bodies by ID without traversing Inspector wiring.
     /// </summary>
     [DisallowMultipleComponent]
     public sealed class ReferenceBody : MonoBehaviour
@@ -41,13 +63,74 @@ namespace SpaceSim.Foundation.Vessels
         public double MassKg => massKg;
 
         /// <summary>
+        /// Sphere-of-influence radius in meters. The distance from this body's center
+        /// beyond which a vessel is considered to have escaped this body's gravitational
+        /// dominance and re-rooted to the parent body's frame.
+        ///
+        /// Top-level bodies (no parent) have <see cref="double.PositiveInfinity"/> —
+        /// no finite distance exceeds infinity, so re-rooting never fires.
+        ///
+        /// PHASE 1 SCOPE (commit 044): hand-set per body via the Inspector. Default
+        /// <see cref="double.PositiveInfinity"/> covers the top-level case; bodies with
+        /// a parent must have a finite value set in the Inspector.
+        ///
+        /// PHASE 4+ DEFERRED: computed automatically via the Laplace sphere formula
+        /// when bodies orbit.
+        /// </summary>
+        [SerializeField, Tooltip("SOI radius in meters. Default infinity (top-level body, never re-roots). Bodies with a parent should set a finite value.")]
+        private double soiRadiusMeters = double.PositiveInfinity;
+
+        /// <summary>Sphere-of-influence radius in meters. See backing field doc for semantics.</summary>
+        public double SoiRadiusMeters => soiRadiusMeters;
+
+        /// <summary>
+        /// Parent body in the hierarchy. Null for top-level bodies (the star at the root
+        /// of a star system; in Phase 0 / Phase 1 single-body scenes, the lone body).
+        ///
+        /// Inspector-wired for human convenience: drag a parent body's GameObject onto
+        /// this field. On <see cref="Awake"/> the reference is resolved into
+        /// <see cref="ParentBody"/> (cached runtime reference) and
+        /// <see cref="ParentBodyId"/> (Guid for save-load).
+        ///
+        /// DEFENSIVE CHECK: if the Inspector wires this body as its own parent (self-cycle),
+        /// Awake logs an error and treats the field as null (top-level body). The math
+        /// downstream would otherwise produce bogus orbital re-rooting computations
+        /// because a body cannot be its own SOI's parent.
+        /// </summary>
+        [SerializeField, Tooltip("Parent body in the hierarchy. Null/unset for top-level bodies. Inspector self-references are rejected with an error log at Awake.")]
+        private ReferenceBody parentBody;
+
+        /// <summary>
+        /// Cached parent body reference resolved at Awake. Null for top-level bodies and
+        /// for self-cycle Inspector configurations (those are rejected with an error log).
+        /// Runtime code uses this property for parent lookup.
+        /// </summary>
+        public ReferenceBody ParentBody { get; private set; }
+
+        /// <summary>
+        /// UUID of the parent body. <see cref="Guid.Empty"/> for top-level bodies (and for
+        /// self-cycle configurations rejected at Awake). Save-load reads/writes this Guid;
+        /// reconstruction-from-save reassigns the cached <see cref="ParentBody"/> reference
+        /// via <see cref="BodyRegistry"/> lookup.
+        /// </summary>
+        public Guid ParentBodyId { get; private set; }
+
+        /// <summary>
         /// Body position in world coordinates.
         ///
-        /// PHASE 0 LIMITATION: position is read once at <see cref="Awake"/> from the
-        /// GameObject's <c>transform.position</c> via the floating-origin manager's current
-        /// origin (treating the transform as a LocalPosition). The body does not move during
-        /// Phase 0. When procgen bodies orbit (Phase 4+), this becomes a per-tick computed
-        /// value from the body's own orbital state.
+        /// PHASE 0 / PHASE 1 LIMITATION: position is read once at <see cref="Awake"/> from
+        /// the GameObject's <c>transform.position</c> via the floating-origin manager's
+        /// current origin (treating the transform as a LocalPosition). The body does not
+        /// move during Phase 0 / Phase 1. When procgen bodies orbit (Phase 4+), this
+        /// becomes a per-tick computed value from the body's own orbital state.
+        ///
+        /// SOI RE-ROOTING IMPLICATION: commit 044's re-rooting math reads this property
+        /// as an instantaneous value when computing distances between bodies and vessels.
+        /// Until Phase 4+ when bodies orbit, the value is constant and reads are
+        /// equivalent. Once bodies orbit, the re-rooting math must call this fresh on
+        /// every evaluation, never cache it across ticks — see the
+        /// <c>OrbitalElements.ReRootStateVector</c> XML doc (Stage 2) for the full
+        /// caching hazard.
         /// </summary>
         public WorldPosition PositionWorld { get; private set; }
 
@@ -57,7 +140,7 @@ namespace SpaceSim.Foundation.Vessels
         /// This is the value orbital mechanics actually consumes — most equations take μ,
         /// not M. The product is more precisely measured for real bodies (μ for Earth is
         /// known to about a part in 10^9, while G has only about 4 decimals of precision),
-        /// but at Phase-0 fidelity computing it from <see cref="MassKg"/> and
+        /// but at Phase-0/Phase-1 fidelity computing it from <see cref="MassKg"/> and
         /// <see cref="CoordinateMath.G"/> is sufficient. Phase 4+ may switch to μ as the
         /// stored quantity.
         /// </summary>
@@ -65,17 +148,70 @@ namespace SpaceSim.Foundation.Vessels
 
         private void Awake()
         {
+            InitializeBodyForTesting();
+        }
+
+        /// <summary>
+        /// TEST-ONLY initialization hook. Encapsulates the Awake-time logic (Guid
+        /// assignment, parent-body resolution, world-position capture, registry
+        /// registration) so EditMode tests can exercise it without Unity's Awake
+        /// firing (which doesn't run on AddComponent in EditMode).
+        ///
+        /// Production code path: Unity calls <see cref="Awake"/>, which calls this
+        /// method. Tests call this method directly to simulate Awake.
+        ///
+        /// Idempotent on BodyId (the <c>if (BodyId == Guid.Empty)</c> guard preserves
+        /// any previously-assigned Guid); idempotent on registry (RegisterBodySafe
+        /// dedups).
+        /// </summary>
+        public void InitializeBodyForTesting()
+        {
             if (BodyId == Guid.Empty)
             {
                 BodyId = Guid.NewGuid();
             }
 
-            // Phase 0: capture position once at Awake. Transform.position is a Unity float3;
-            // in Phase 0 the test scene puts the ReferenceBody at the scene origin (or near
-            // it), and the floating origin's initial position is also zero, so the world
-            // position equals the transform position to single-precision. When the body
-            // is far from origin, this conversion will need to go through
-            // FloatingOriginManager.LocalToWorld with the current origin.
+            // Resolve parent body wiring. Three cases:
+            //   1. parentBody == null → top-level body. ParentBody=null, ParentBodyId=Empty.
+            //   2. parentBody == this → self-cycle. Reject with error; treat as top-level.
+            //   3. parentBody is a real other body → resolve cached reference + Guid.
+            if (parentBody == this)
+            {
+                Debug.LogError(
+                    $"ReferenceBody '{gameObject.name}': Inspector wires this body as its " +
+                    $"own parent. A body cannot be its own SOI's parent. Treating as " +
+                    $"top-level body (ParentBody = null). Fix the Inspector wiring; the " +
+                    $"self-cycle would produce bogus orbital re-rooting computations.");
+                ParentBody = null;
+                ParentBodyId = Guid.Empty;
+            }
+            else if (parentBody != null)
+            {
+                ParentBody = parentBody;
+                // parentBody.BodyId may not be populated yet if parentBody.Awake hasn't
+                // fired (Unity's MonoBehaviour Awake ordering is not deterministic
+                // across sibling GameObjects). If empty, give it a fresh Guid here so
+                // the parent body itself will adopt the same Guid when its own Awake
+                // runs (the Awake's `if (BodyId == Guid.Empty)` guard preserves any
+                // pre-assigned Guid).
+                if (parentBody.BodyId == Guid.Empty)
+                {
+                    parentBody.BodyId = Guid.NewGuid();
+                }
+                ParentBodyId = parentBody.BodyId;
+            }
+            else
+            {
+                ParentBody = null;
+                ParentBodyId = Guid.Empty;
+            }
+
+            // Phase 0/1: capture position once at Awake. Transform.position is a Unity float3;
+            // in the test scene the body sits at the scene origin (or near it), and the
+            // floating origin's initial position is also zero, so the world position equals
+            // the transform position to single-precision. When the body is far from origin,
+            // this conversion will need to go through FloatingOriginManager.LocalToWorld
+            // with the current origin.
             var t = transform.position;
             if (FloatingOriginManager.Instance != null)
             {
@@ -84,10 +220,21 @@ namespace SpaceSim.Foundation.Vessels
             }
             else
             {
-                // Manager not yet up: treat transform position as world position. The Phase 0
-                // test scene places the body at origin so this branch produces (0, 0, 0).
+                // Manager not yet up: treat transform position as world position. The
+                // Phase 0 test scene places the body at origin so this branch produces
+                // (0, 0, 0).
                 PositionWorld = new WorldPosition(t.x, t.y, t.z);
             }
+
+            // Register with the body registry. Self-registration pattern matches
+            // VesselRegistry. The registry exists so re-rooting math can look up bodies
+            // by ID without traversing Inspector wiring chains.
+            BodyRegistry.RegisterBodySafe(this);
+        }
+
+        private void OnDestroy()
+        {
+            BodyRegistry.UnregisterBodySafe(this);
         }
     }
 }

@@ -246,6 +246,12 @@ WorldAuthoritativeState {
     galaxy_seed: u64                      // Procgen seed (per commit 008)
     visited_systems: Map<SystemID, SystemState>
     
+    // All celestial bodies known to the campaign (planets, moons, stars). Each body's
+    // hierarchy position, mass, position, and SOI radius is per §2.7 BodyState. Added
+    // at commit 044 as part of SOI re-rooting work; entries land progressively as
+    // Phase 4 procgen runs.
+    bodies: Map<BodyID, BodyState>
+    
     // All vessels in the campaign (alive, lost, or in cruise)
     vessels: Map<UUID, VesselAuthoritativeState>
     
@@ -277,6 +283,54 @@ WorldAuthoritativeState {
 ```
 
 The world state is the complete authoritative state of a campaign. Save files contain a serialized world state. Network replication transmits world state deltas (changes since last sync).
+
+### 2.7 BodyState (celestial body) schema
+
+Per `### Reference frame hierarchy` in `docs/CONSTRAINTS.md` §2: hierarchical frames (Sun, planet, moon, vessel) with explicit transitions at sphere-of-influence boundaries. The `BodyState` schema captures the per-body data the patched-conics math needs to perform SOI re-rooting (commit 044) and the per-tick analytic propagation when bodies themselves orbit (Phase 4+).
+
+```
+BodyState {
+    // Identity
+    body_id: BodyID                       // UUID; stable across save/load
+    name: String                          // Player-facing name (e.g., "Earth", "Mun")
+    
+    // Mass and gravity
+    mass_kg: f64                          // Body mass in kilograms
+    mu: f64                               // Standard gravitational parameter G * mass_kg, m^3/s^2
+                                          // (derived; cached for math performance)
+    
+    // Position
+    position_world: f64x3                 // Position in galactic (double-precision) coordinates
+                                          // PHASE 0/1 SCOPE: fixed at scene load.
+                                          // PHASE 4+: computed per-tick from this body's own orbital state.
+    
+    // SOI hierarchy
+    soi_radius_meters: f64                // Sphere-of-influence radius
+                                          // PositiveInfinity for top-level bodies (no parent).
+                                          // PHASE 1 SCOPE (commit 044): hand-set per body.
+                                          // PHASE 4+: computed via Laplace sphere formula
+                                          //          r_SOI ≈ a * (m / M_parent)^(2/5)
+                                          //          when this body orbits a parent.
+    parent_body_id: Option<BodyID>        // Parent in the hierarchy; None for top-level bodies.
+                                          // SOI re-rooting reads this to find the body to re-root TO
+                                          // when crossing this body's SOI outward.
+    
+    // PHASE 4+ DEFERRED FIELDS (named here so the schema is complete; not populated in Phase 0/1):
+    // orbital_state_around_parent: Option<KeplerState>   // When this body orbits a parent.
+    // axial_tilt: f64                                    // Radians.
+    // rotation_rate: f64                                 // Radians per second; for body-fixed frame.
+    // surface_terrain_seed: u64                          // Phase 4 procgen.
+    // atmospheric_profile: Option<AtmosphericProfile>    // Density-vs-altitude function.
+    // children_body_ids: List<BodyID>                    // Reactively maintained; alternative to
+    //                                                    //   iterating bodies and filtering by parent.
+}
+```
+
+**Phase 0 / Phase 1 implementation scope:** the in-code `ReferenceBody` MonoBehaviour (in the Vessels asmdef) populates `body_id`, `mass_kg`, `mu`, `position_world`, `soi_radius_meters`, and `parent_body_id`. The remaining fields are scaffolded in the doc but their in-code representation lands with the procgen-bodies work in Phase 4+. The `BodyRegistry` static class (added at commit 044) provides Guid-keyed lookup and parent→children enumeration so save-load and re-rooting math don't need to traverse Inspector wiring chains.
+
+**Save-load semantics:** `parent_body_id` is the persisted reference shape (Inspector references don't survive serialization). On load, `BodyRegistry.TryGetBodyById` resolves the Guid back to a runtime `ReferenceBody`. Self-cycle detection (a body wired as its own parent) is rejected at Awake with an error log; the body is treated as top-level (`parent_body_id = None`) so downstream math doesn't produce bogus orbital re-rooting.
+
+**Top-level body convention:** the star at the root of a star system has `parent_body_id = None` and `soi_radius_meters = PositiveInfinity`. The re-rooting check on a top-level body always reports "still inside SOI" because no finite distance exceeds infinity — mathematically clean for patched conics (a body with no parent has no SOI boundary within its system). In Phase 0 / Phase 1 single-body scenes the lone `ReferenceBody` plays the top-level role; multi-body home-system scenes arrive in Phase 4.
 
 ---
 
