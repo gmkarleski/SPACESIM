@@ -65,6 +65,22 @@ namespace SpaceSim.Foundation.SimTick
         /// <summary>The warp controller. Owns warp-rate state and per-mode ceilings.</summary>
         public SimTickWarpController Warp { get; } = new SimTickWarpController();
 
+        /// <summary>
+        /// Analytic event priority queue per netcode contract §4.1 and CONSTRAINTS §2
+        /// ("Authority over the queue lives in the sim-tick controller"). Predictors in
+        /// the Vessels module call <see cref="EventPriorityQueue.UpdateVesselEntry"/>
+        /// each tick to record upcoming periapsis/apoapsis/SOI/etc. events;
+        /// <see cref="RunFixedUpdateCycle"/> reads <see cref="EventPriorityQueue.PeekTopTick"/>
+        /// to bound time-warp advancement so the cycle lands on event ticks exactly
+        /// (§4.2 "Per-tick time-warp advancement").
+        ///
+        /// Initialized as an empty queue at commit 045 (Stage 2). The
+        /// <c>RunFixedUpdateCycle</c> integration that consumes the queue lands at
+        /// commit 045 Stage 3 (until then, the queue is populated but not consulted —
+        /// no behavior change in Play).
+        /// </summary>
+        public EventPriorityQueue EventQueue { get; } = new EventPriorityQueue();
+
         /// <summary>Total FixedUpdate cycles processed since startup. Distinct from <see cref="TickNumber"/>: 1 FixedUpdate may advance N ticks at warp.</summary>
         public long FixedUpdateCount { get; private set; }
 
@@ -241,9 +257,41 @@ namespace SpaceSim.Foundation.SimTick
 
         private void FixedUpdate()
         {
-            // Empty event queue (commit 033 scope: no event queue exists yet).
-            // ticksUntilNextEvent = int.MaxValue means warp is capped by mode ceiling only.
-            int analyticIterations = Warp.ComputeAnalyticIterations(int.MaxValue);
+            // Read the analytic event queue to bound time-warp advancement. The queue's
+            // top tick (if any) gives the next sim-tick at which an event resolves;
+            // warp must not overshoot that tick. Per netcode contract §4.2:
+            //   target_advance_ticks = warp_rate
+            //   next_event_ticks = ticks_until_top_of_event_queue()
+            //   actual_advance_ticks = min(target_advance_ticks, next_event_ticks)
+            //
+            // Empty queue: pass int.MaxValue so warp is capped only by the mode
+            // ceiling. The Warp controller's ComputeAnalyticIterations does the
+            // actual min(warp_rate, ticksUntilNextEvent) clamping.
+            //
+            // Two overflow defenses at this boundary:
+            //   - If the predicted event has already fired or is past (delta <= 0):
+            //     pass 0 so warp doesn't advance past it. This shouldn't happen in
+            //     normal operation (the driver removes events that fire) but defends
+            //     against a stale entry.
+            //   - If delta exceeds int.MaxValue (vessel on a centuries-long orbit at
+            //     low warp): clamp to int.MaxValue. The Warp controller's int-domain
+            //     arithmetic doesn't need full long precision; "effectively no event
+            //     soon" is enough.
+            long? topTick = EventQueue.PeekTopTick();
+            int ticksUntilNextEvent;
+            if (topTick.HasValue)
+            {
+                long delta = topTick.Value - TickNumber;
+                if (delta <= 0) ticksUntilNextEvent = 0;
+                else if (delta > int.MaxValue) ticksUntilNextEvent = int.MaxValue;
+                else ticksUntilNextEvent = (int)delta;
+            }
+            else
+            {
+                ticksUntilNextEvent = int.MaxValue;
+            }
+
+            int analyticIterations = Warp.ComputeAnalyticIterations(ticksUntilNextEvent);
             RunFixedUpdateCycle(analyticIterations);
             FixedUpdateCount++;
         }

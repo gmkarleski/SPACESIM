@@ -168,13 +168,17 @@ KeplerState {
     // Reference frame context
     reference_body_id: BodyID             // Which body's gravity defines the orbit
     
-    // Pre-computed event predictions for time-warp gating
-    next_periapsis_tick: SimTickCount     // When vessel reaches periapsis
-    next_apoapsis_tick: SimTickCount
+    // Pre-computed event predictions for time-warp gating. All four are
+    // Option<SimTickCount> (nullable) — see contract amendment at commit 045
+    // for the rationale.
+    next_periapsis_tick: Option<SimTickCount>     // When vessel reaches periapsis; None for hyperbolic post-periapsis
+    next_apoapsis_tick: Option<SimTickCount>      // None for hyperbolic orbits (no apoapsis exists)
     next_soi_transition_tick: Option<SimTickCount>  // SOI exit, if applicable
     next_mode_transition_tick: Option<SimTickCount> // Will need PhysX activation when
 }
 ```
+
+**Nullable event-prediction fields (amended at commit 045):** All four `next_*_tick` fields are `Option<SimTickCount>`, not `SimTickCount`. Hyperbolic orbits genuinely have no future apoapsis, and post-periapsis hyperbolic trajectories have no future periapsis either. Nullable typing makes "no future event" explicit in the type rather than encoding "no event" via a sentinel value like `long.MaxValue`. The original `commit 026` contract had `next_periapsis_tick` and `next_apoapsis_tick` as non-nullable; the implementation has always used nullable (`long?` in C#). This amendment aligns the contract with the implementation's honest type.
 
 ### 2.4 Interstellar-cruise mode state
 

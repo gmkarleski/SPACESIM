@@ -1,6 +1,7 @@
 using System;
 using SpaceSim.Foundation.Coordinates;
 using Unity.Mathematics;
+using UnityEngine;  // For Debug.LogWarning in Newton-Raphson non-convergence path.
 
 namespace SpaceSim.Foundation.Vessels
 {
@@ -444,6 +445,282 @@ namespace SpaceSim.Foundation.Vessels
         {
             if (eccentricity >= 1.0) return double.PositiveInfinity;
             return semiMajorAxis * (1.0 + eccentricity);
+        }
+
+        // ----- Anomaly conversions (extracted from KeplerPropagator in commit 045) -----
+
+        /// <summary>
+        /// Convergence tolerance for Newton-Raphson on Kepler's equation, in radians.
+        /// At LEO scale (~7e6 m), 1e-10 rad ≈ 7e-4 m position error from solver
+        /// convergence — comfortably below downstream tolerances.
+        /// </summary>
+        public const double KeplerConvergenceTolerance = 1e-10;
+
+        /// <summary>
+        /// Maximum Newton-Raphson iterations before declaring non-convergence. Typical
+        /// convergence is 3-5 iterations with Conway's starter; 15 is a generous upper
+        /// bound that catches pathological cases (e &gt; 0.99 with adversarial M).
+        /// </summary>
+        public const int MaxKeplerIterations = 15;
+
+        /// <summary>
+        /// Eccentricity band around 1.0 where the elliptic-vs-hyperbolic dispatch produces
+        /// O(1e-3 m) position error due to numerical instability near the parabolic limit.
+        /// See <see cref="TrueToMeanAnomaly"/> XML doc for the parabolic-omission rationale.
+        /// Width is asymmetric: 1e-8 on both sides, total band [1 - 1e-8, 1 + 1e-8].
+        /// </summary>
+        public const double ParabolicInstabilityBand = 1e-8;
+
+        /// <summary>
+        /// Mean motion n = sqrt(μ / |a|³), in radians per second. The angular rate at
+        /// which mean anomaly advances along the orbit.
+        ///
+        /// Always returns a positive value. Orbit direction is encoded geometrically
+        /// (inclination, RAAN, argument-of-periapsis) — never in the sign of n. The
+        /// |a| inside the formula handles both elliptical (a > 0) and hyperbolic
+        /// (a &lt; 0) orbits with the same expression.
+        ///
+        /// UNITS: <paramref name="mu"/> in m³/s², <paramref name="semiMajorAxis"/> in
+        /// meters. Returns rad/sec. Callers converting to ticks-of-mean-anomaly-advance
+        /// multiply by <c>SimTickController.SimTickIntervalSeconds</c> per tick.
+        ///
+        /// Mean motion is independent of true/eccentric/hyperbolic anomaly — the rate
+        /// is constant along the orbit; only the geometric advance per radian of mean
+        /// anomaly varies with position (faster at periapsis, slower at apoapsis for
+        /// ellipses).
+        /// </summary>
+        /// <param name="semiMajorAxis">Semi-major axis a in meters. Sign carries orbit type
+        /// (positive ellipse, negative hyperbola); the function uses |a|.</param>
+        /// <param name="mu">Standard gravitational parameter μ = G · M of the reference
+        /// body, in m³/s².</param>
+        /// <returns>Mean motion n in radians per second (always positive).</returns>
+        public static double MeanMotion(double semiMajorAxis, double mu)
+        {
+            double absA = math.abs(semiMajorAxis);
+            return math.sqrt(mu / (absA * absA * absA));
+        }
+
+        /// <summary>
+        /// Convert true anomaly ν to mean anomaly M. Dispatches on eccentricity:
+        /// elliptical (e &lt; 1) goes through eccentric anomaly E; hyperbolic (e &gt; 1)
+        /// goes through hyperbolic anomaly H.
+        ///
+        /// <para>ELLIPTICAL BRANCH (e &lt; 1):</para>
+        /// <list type="number">
+        ///   <item>E = 2 · atan2(√(1-e) · sin(ν/2), √(1+e) · cos(ν/2))</item>
+        ///   <item>M = E - e · sin(E)  (Kepler's equation forward)</item>
+        /// </list>
+        ///
+        /// <para>HYPERBOLIC BRANCH (e &gt; 1):</para>
+        /// <list type="number">
+        ///   <item>H = 2 · atanh(√((e-1)/(e+1)) · tan(ν/2))</item>
+        ///   <item>M = e · sinh(H) - H  (hyperbolic Kepler's equation forward)</item>
+        /// </list>
+        ///
+        /// <para>SIGN CONVENTION:</para>
+        /// Mean anomaly is signed. A negative true anomaly produces a negative mean
+        /// anomaly (the math is odd-symmetric around ν=0). Predictor work that takes
+        /// the difference of two mean anomalies (current vs. target) gets a signed Δt,
+        /// which is the correct shape for "ticks until target, possibly in the past."
+        ///
+        /// <para>RANGE:</para>
+        /// Elliptical: caller may pass any ν; output M is in the same half-period as the
+        /// input (e.g., ν ∈ [0, π] → M ∈ [0, π]; ν ∈ [-π, 0] → M ∈ [-π, 0]). The
+        /// function does not wrap. Wrapping into [0, 2π) is the caller's responsibility
+        /// if needed for downstream stability.
+        /// Hyperbolic: ν must be within the asymptote angle ±acos(-1/e). Outside this
+        /// range, the trajectory is past the asymptote — physically meaningless. The
+        /// function clamps the internal atanh argument to (-1, 1) to avoid singularities;
+        /// callers passing ν beyond the asymptote get an approximation, not an error.
+        ///
+        /// <para>NO PARABOLIC HANDLING:</para>
+        /// The function does not have an explicit e = 1 branch. Within the
+        /// <see cref="ParabolicInstabilityBand"/> (e ∈ [1 - 1e-8, 1 + 1e-8]), the
+        /// elliptic-vs-hyperbolic dispatch is numerically unstable but does not throw.
+        /// Real orbits never sit at e = 1 exactly; the instability band is narrow enough
+        /// that physical scenarios (planetary capture, escape) sample either side without
+        /// touching the singular region. See <see cref="KeplerPropagator"/>'s class-level
+        /// XML doc for the full parabolic-omission rationale.
+        /// </summary>
+        /// <param name="trueAnomaly">True anomaly ν in radians. Signed; may be negative.</param>
+        /// <param name="eccentricity">Eccentricity e. 0 ≤ e &lt; 1 for ellipse, e &gt; 1
+        /// for hyperbola.</param>
+        /// <returns>Mean anomaly M in radians (signed).</returns>
+        public static double TrueToMeanAnomaly(double trueAnomaly, double eccentricity)
+        {
+            if (eccentricity < 1.0)
+            {
+                // Elliptical: ν → E → M.
+                double halfNu = trueAnomaly * 0.5;
+                double sqrtOneMinusE = math.sqrt(1.0 - eccentricity);
+                double sqrtOnePlusE = math.sqrt(1.0 + eccentricity);
+                double eccentricAnomaly = 2.0 * math.atan2(
+                    sqrtOneMinusE * math.sin(halfNu),
+                    sqrtOnePlusE * math.cos(halfNu));
+                return eccentricAnomaly - eccentricity * math.sin(eccentricAnomaly);
+            }
+            else
+            {
+                // Hyperbolic: ν → H → M.
+                double tanHalfNu = math.tan(trueAnomaly * 0.5);
+                double ratio = math.sqrt((eccentricity - 1.0) / (eccentricity + 1.0)) * tanHalfNu;
+                // atanh is defined for |ratio| < 1 (corresponds to ν within asymptote angle).
+                // Clamp defensively against floating-point precision near the asymptote.
+                ratio = math.clamp(ratio, -0.9999999999, 0.9999999999);
+                double hyperbolicAnomaly = 2.0 * Atanh(ratio);
+                return eccentricity * math.sinh(hyperbolicAnomaly) - hyperbolicAnomaly;
+            }
+        }
+
+        /// <summary>
+        /// Convert mean anomaly M to true anomaly ν. Inverse of
+        /// <see cref="TrueToMeanAnomaly"/>. Dispatches on eccentricity: elliptical
+        /// solves Kepler's equation iteratively; hyperbolic solves the hyperbolic
+        /// Kepler equation iteratively.
+        ///
+        /// <para>ELLIPTICAL BRANCH (e &lt; 1):</para>
+        /// <list type="number">
+        ///   <item>Solve M = E - e · sin(E) for E via Newton-Raphson with Conway's 1986
+        ///   starter (typical convergence 3-5 iterations).</item>
+        ///   <item>ν = 2 · atan2(√(1+e) · sin(E/2), √(1-e) · cos(E/2))</item>
+        /// </list>
+        /// On non-convergence within <see cref="MaxKeplerIterations"/>, logs a warning
+        /// via <c>Debug.LogWarning</c> and returns the best estimate (position error
+        /// may exceed <see cref="KeplerConvergenceTolerance"/>).
+        ///
+        /// <para>HYPERBOLIC BRANCH (e &gt; 1):</para>
+        /// <list type="number">
+        ///   <item>Solve M = e · sinh(H) - H for H via Newton-Raphson with Conway's
+        ///   logarithmic starter for large |M|.</item>
+        ///   <item>tan(ν/2) = √((e+1)/(e-1)) · tanh(H/2)</item>
+        /// </list>
+        /// On non-convergence: same fallback as elliptical.
+        ///
+        /// <para>ROUND-TRIP PROPERTY:</para>
+        /// <c>MeanToTrueAnomaly(TrueToMeanAnomaly(ν, e), e)</c> returns ν to within
+        /// <see cref="KeplerConvergenceTolerance"/> for all valid (ν, e) pairs outside
+        /// the parabolic-instability band.
+        ///
+        /// <para>NO PARABOLIC HANDLING:</para>
+        /// Same as <see cref="TrueToMeanAnomaly"/>.
+        /// </summary>
+        /// <param name="meanAnomaly">Mean anomaly M in radians (signed).</param>
+        /// <param name="eccentricity">Eccentricity e.</param>
+        /// <returns>True anomaly ν in radians (signed).</returns>
+        public static double MeanToTrueAnomaly(double meanAnomaly, double eccentricity)
+        {
+            if (eccentricity < 1.0)
+            {
+                double eccentricAnomaly = SolveKeplerElliptic(meanAnomaly, eccentricity);
+                double halfE = eccentricAnomaly * 0.5;
+                double sqrtOneMinusE = math.sqrt(1.0 - eccentricity);
+                double sqrtOnePlusE = math.sqrt(1.0 + eccentricity);
+                return 2.0 * math.atan2(
+                    sqrtOnePlusE * math.sin(halfE),
+                    sqrtOneMinusE * math.cos(halfE));
+            }
+            else
+            {
+                double hyperbolicAnomaly = SolveKeplerHyperbolic(meanAnomaly, eccentricity);
+                double tanHalfNu = math.sqrt((eccentricity + 1.0) / (eccentricity - 1.0))
+                    * math.tanh(hyperbolicAnomaly * 0.5);
+                return 2.0 * math.atan(tanHalfNu);
+            }
+        }
+
+        // ----- Private helpers for anomaly conversions -----
+
+        /// <summary>
+        /// Solve Kepler's equation M = E - e·sin(E) for the eccentric anomaly E given
+        /// mean anomaly M and eccentricity e (0 ≤ e &lt; 1). Newton-Raphson with Conway's
+        /// 1986 starter:
+        ///   E_0 = M + e · sin(M) / (1 - sin(M + e) + sin(M))
+        ///
+        /// Special-cases e == 0 (circular orbit): M = E trivially, no iteration needed.
+        /// Defensive denominator guard falls back to E_0 = ±π when Conway's starter
+        /// denominator gets pathologically small (e ≈ 1 edge case).
+        ///
+        /// Extracted from <see cref="KeplerPropagator"/> at commit 045 so the math is
+        /// reusable by predictor work. Internal helper for <see cref="MeanToTrueAnomaly"/>.
+        /// </summary>
+        private static double SolveKeplerElliptic(double meanAnomaly, double e)
+        {
+            if (e == 0.0)
+            {
+                return meanAnomaly;
+            }
+
+            double sinM = math.sin(meanAnomaly);
+            double denominator = 1.0 - math.sin(meanAnomaly + e) + sinM;
+            double eccentricAnomaly = math.abs(denominator) > 1e-12
+                ? meanAnomaly + e * sinM / denominator
+                : (meanAnomaly > 0.0 ? math.PI_DBL : -math.PI_DBL);
+
+            for (int i = 0; i < MaxKeplerIterations; i++)
+            {
+                double f = eccentricAnomaly - e * math.sin(eccentricAnomaly) - meanAnomaly;
+                if (math.abs(f) < KeplerConvergenceTolerance)
+                {
+                    return eccentricAnomaly;
+                }
+                double fPrime = 1.0 - e * math.cos(eccentricAnomaly);
+                eccentricAnomaly -= f / fPrime;
+            }
+
+            Debug.LogWarning(
+                $"OrbitalElements.SolveKeplerElliptic: Newton-Raphson did not converge " +
+                $"within {MaxKeplerIterations} iterations for M = {meanAnomaly:G17}, e = {e:G17}. " +
+                $"Returning best estimate {eccentricAnomaly:G17}; position error may exceed tolerance.");
+            return eccentricAnomaly;
+        }
+
+        /// <summary>
+        /// Solve hyperbolic Kepler equation M = e·sinh(H) - H for H given mean anomaly M
+        /// and eccentricity e (e &gt; 1). Newton-Raphson with Conway's logarithmic starter:
+        ///   H_0 ≈ M / (e - 1)              for |M| &lt; 4·e
+        ///   H_0 ≈ sign(M) · ln(2·|M|/e + 1.8)  for large |M|
+        ///
+        /// Internal helper for <see cref="MeanToTrueAnomaly"/>. Extracted from
+        /// <see cref="KeplerPropagator"/> at commit 045.
+        /// </summary>
+        private static double SolveKeplerHyperbolic(double meanAnomaly, double e)
+        {
+            double hyperbolicAnomaly;
+            double absM = math.abs(meanAnomaly);
+            if (absM < 4.0 * e)
+            {
+                hyperbolicAnomaly = meanAnomaly / (e - 1.0);
+            }
+            else
+            {
+                hyperbolicAnomaly = math.sign(meanAnomaly) * math.log(2.0 * absM / e + 1.8);
+            }
+
+            for (int i = 0; i < MaxKeplerIterations; i++)
+            {
+                double f = e * math.sinh(hyperbolicAnomaly) - hyperbolicAnomaly - meanAnomaly;
+                if (math.abs(f) < KeplerConvergenceTolerance)
+                {
+                    return hyperbolicAnomaly;
+                }
+                double fPrime = e * math.cosh(hyperbolicAnomaly) - 1.0;
+                hyperbolicAnomaly -= f / fPrime;
+            }
+
+            Debug.LogWarning(
+                $"OrbitalElements.SolveKeplerHyperbolic: Newton-Raphson did not converge " +
+                $"within {MaxKeplerIterations} iterations for M = {meanAnomaly:G17}, e = {e:G17}. " +
+                $"Returning best estimate {hyperbolicAnomaly:G17}; position error may exceed tolerance.");
+            return hyperbolicAnomaly;
+        }
+
+        /// <summary>
+        /// Inverse hyperbolic tangent. Unity.Mathematics does not expose atanh directly,
+        /// so this is the standard identity: atanh(x) = 0.5 · ln((1+x)/(1-x)) for |x| &lt; 1.
+        /// </summary>
+        private static double Atanh(double x)
+        {
+            return 0.5 * math.log((1.0 + x) / (1.0 - x));
         }
     }
 }

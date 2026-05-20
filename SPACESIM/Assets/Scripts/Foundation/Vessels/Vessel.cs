@@ -390,6 +390,13 @@ namespace SpaceSim.Foundation.Vessels
             _anchor = null;
             DestroyComponentSafe(_rb);
             _rb = null;
+
+            // Step 9 (commit 045): invalidate any stale event-queue entries from a
+            // prior orbit. The VesselEventPredictionDriver will repopulate on the
+            // next TickAdvanced now that this vessel is in KeplerRails. Defensive
+            // null checks: SimTickController.Instance may be absent in EditMode
+            // tests that don't construct the controller.
+            SimTickController.Instance?.EventQueue?.RemoveVesselEntries(State.VesselId);
         }
 
         /// <summary>
@@ -519,6 +526,11 @@ namespace SpaceSim.Foundation.Vessels
 
             // Step 6: Clear Kepler state.
             State.KeplerState = null;
+
+            // Step 7 (commit 045): vessel is leaving KeplerRails; remove any
+            // event-queue entries. The driver skips non-KeplerRails vessels so no
+            // repopulation happens until/unless the vessel transitions back.
+            SimTickController.Instance?.EventQueue?.RemoveVesselEntries(State.VesselId);
         }
 
         // ----- SOI re-rooting (commit 044) -----
@@ -616,6 +628,12 @@ namespace SpaceSim.Foundation.Vessels
             State.KeplerState = newKeplerState;
             _referenceBody = newBody;
             State.LastAdvancedTick = currentTick;
+
+            // commit 045: orbital elements changed; invalidate predictions in the
+            // event queue. The driver recomputes on the next TickAdvanced now that
+            // the new KeplerState (with different μ, different orbit shape) is
+            // committed.
+            SimTickController.Instance?.EventQueue?.RemoveVesselEntries(State.VesselId);
         }
 
         // ----- Position accessor -----

@@ -132,6 +132,16 @@ namespace SpaceSim.Foundation.Vessels
             // body's infinite SOI; no children to enter). The Console will show no
             // re-rooting log messages during Play with this scene.
             VesselSoiRerootingDriver.Initialize();
+
+            // Wire up the per-sim-tick event prediction driver (commit 045). Always-on:
+            // periapsis/apoapsis prediction is real math, populated for every
+            // Kepler-rails vessel each tick. In Play, the predictor writes to
+            // KeplerState.NextPeriapsisTick / NextApoapsisTick and updates the
+            // SimTickController.EventQueue. The integration with
+            // RunFixedUpdateCycle (warp respecting the queue) lands in commit 045
+            // Stage 3 — until then the queue is populated but not consulted, so
+            // observable Play behavior is unchanged.
+            VesselEventPredictionDriver.Initialize();
         }
 
         private void Update()

@@ -267,10 +267,23 @@ namespace SpaceSim.Foundation.Vessels.Tests
                 "parabolic apoapsis should be +infinity");
         }
 
-        // ----- Event-prediction fields are null at construction (Phase 0 stub) -----
+        // ----- Event-prediction fields are null at construction -----
 
+        /// <summary>
+        /// <see cref="OrbitalElements.ComputeFromStateVector"/> returns a freshly-
+        /// constructed <see cref="KeplerState"/> with all four event-prediction
+        /// fields null. Fields are populated by
+        /// <see cref="VesselEventPredictionDriver"/> on the next sim-tick after the
+        /// vessel is in KeplerRails mode (NextPeriapsisTick + NextApoapsisTick land
+        /// at commit 045; NextSoiTransitionTick + NextModeTransitionTick land at
+        /// later commits in the predictor sequence). At construction time — the
+        /// moment this test exercises — all four are null.
+        ///
+        /// Renamed at commit 045 Stage 3 from "AreNull" to
+        /// "AreNullAtConstruction" to make the timing explicit.
+        /// </summary>
         [Test]
-        public void ComputeFromStateVector_EventPredictionFields_AreNull()
+        public void ComputeFromStateVector_EventPredictionFields_AreNullAtConstruction()
         {
             double3 r = new double3(LeoRadius, 0.0, 0.0);
             double vCircular = math.sqrt(EarthMu / LeoRadius);
@@ -279,7 +292,8 @@ namespace SpaceSim.Foundation.Vessels.Tests
             KeplerState state = OrbitalElements.ComputeFromStateVector(
                 r, v, EarthMu, TestEpochTick, TestBodyId);
 
-            Assert.IsNull(state.NextPeriapsisTick, "event prediction stubs left null in Phase 0");
+            Assert.IsNull(state.NextPeriapsisTick,
+                "Construction returns null; populated on next TickAdvanced by event predictor (commit 045+)");
             Assert.IsNull(state.NextApoapsisTick);
             Assert.IsNull(state.NextSoiTransitionTick);
             Assert.IsNull(state.NextModeTransitionTick);
@@ -622,6 +636,227 @@ namespace SpaceSim.Foundation.Vessels.Tests
                 "Re-rooted SMA across 1e9 m distances should match direct computation");
             AssertNear(directResult.Eccentricity, result.Eccentricity, 1e-9,
                 "Re-rooted eccentricity should be precision-stable across large distances");
+        }
+
+        // ----- Anomaly conversions (commit 045 Stage 1) -----
+
+        [Test]
+        public void TrueToMeanAnomaly_CircularOrbit_ReturnsSameAngle()
+        {
+            // e = 0: Kepler's equation reduces to M = E, and E = ν (no eccentricity to
+            // distort the anomaly). At every true anomaly, mean anomaly equals true
+            // anomaly. Test a few points around the circle.
+            AssertNear(0.0, OrbitalElements.TrueToMeanAnomaly(0.0, 0.0), 1e-12,
+                "Circular orbit at ν=0: M=0");
+            AssertNear(math.PI_DBL * 0.5, OrbitalElements.TrueToMeanAnomaly(math.PI_DBL * 0.5, 0.0), 1e-12,
+                "Circular orbit at ν=π/2: M=π/2");
+            AssertNear(math.PI_DBL, OrbitalElements.TrueToMeanAnomaly(math.PI_DBL, 0.0), 1e-12,
+                "Circular orbit at ν=π: M=π");
+        }
+
+        [Test]
+        public void TrueToMeanAnomaly_EllipticalAtPeriapsis_ReturnsZero()
+        {
+            // Periapsis is ν=0. At ν=0 the eccentric anomaly E=0 (by the formula), and
+            // M = E - e·sin(E) = 0 - e·0 = 0. Holds for any e.
+            AssertNear(0.0, OrbitalElements.TrueToMeanAnomaly(0.0, 0.5), 1e-12,
+                "Elliptical at ν=0: M=0 (periapsis)");
+            AssertNear(0.0, OrbitalElements.TrueToMeanAnomaly(0.0, 0.95), 1e-12,
+                "High-eccentricity ellipse at ν=0: M=0");
+        }
+
+        [Test]
+        public void TrueToMeanAnomaly_EllipticalAtApoapsis_ReturnsPi()
+        {
+            // Apoapsis is ν=π. E = 2·atan2(√(1-e)·sin(π/2), √(1+e)·cos(π/2)).
+            // cos(π/2) = 0, so atan2 with second argument 0 gives π/2 for positive first
+            // argument → E = π. M = π - e·sin(π) = π - 0 = π. Holds for any e<1.
+            AssertNear(math.PI_DBL, OrbitalElements.TrueToMeanAnomaly(math.PI_DBL, 0.5), 1e-12,
+                "Elliptical at ν=π: M=π (apoapsis)");
+            AssertNear(math.PI_DBL, OrbitalElements.TrueToMeanAnomaly(math.PI_DBL, 0.95), 1e-12,
+                "High-eccentricity ellipse at ν=π: M=π");
+        }
+
+        [Test]
+        public void TrueToMeanAnomaly_EllipticalAtQuarter_HasCorrectValue()
+        {
+            // ν = π/2, e = 0.3. Compute expected analytically:
+            //   tan(ν/2) = tan(π/4) = 1
+            //   E = 2·atan2(√(1-0.3)·sin(π/4), √(1+0.3)·cos(π/4))
+            //     = 2·atan2(√0.7 · √2/2, √1.3 · √2/2)
+            //     = 2·atan2(√0.7, √1.3)
+            //     = 2·atan(√(0.7/1.3))
+            //     = 2·atan(√0.53846...)
+            //     = 2·atan(0.73380...)
+            //     = 2·0.63293...
+            //     = 1.26586...
+            //   M = E - 0.3·sin(E) = 1.26586 - 0.3·sin(1.26586) = 1.26586 - 0.3·0.95255
+            //     = 1.26586 - 0.28577 = 0.98009...
+            // Hand-computed via the same formula the helper implements; tolerance 1e-9.
+            double e = 0.3;
+            double nu = math.PI_DBL * 0.5;
+            double sqrtOneMinusE = math.sqrt(1.0 - e);
+            double sqrtOnePlusE = math.sqrt(1.0 + e);
+            double E_expected = 2.0 * math.atan2(
+                sqrtOneMinusE * math.sin(nu * 0.5),
+                sqrtOnePlusE * math.cos(nu * 0.5));
+            double M_expected = E_expected - e * math.sin(E_expected);
+
+            double M_actual = OrbitalElements.TrueToMeanAnomaly(nu, e);
+            AssertNear(M_expected, M_actual, 1e-12,
+                "Elliptical at ν=π/2, e=0.3: M should match hand-derived formula");
+        }
+
+        [Test]
+        public void TrueToMeanAnomaly_HyperbolicAtPeriapsis_ReturnsZero()
+        {
+            // Periapsis on hyperbolic trajectory is ν=0. By the same logic as the
+            // elliptical case: ratio = 0, H = 0, M = e·sinh(0) - 0 = 0.
+            AssertNear(0.0, OrbitalElements.TrueToMeanAnomaly(0.0, 1.5), 1e-12,
+                "Hyperbolic at ν=0: M=0 (periapsis)");
+            AssertNear(0.0, OrbitalElements.TrueToMeanAnomaly(0.0, 3.0), 1e-12,
+                "High-energy hyperbolic at ν=0: M=0");
+        }
+
+        [Test]
+        public void TrueToMeanAnomaly_HyperbolicPositiveAnomaly_HasCorrectSign()
+        {
+            // Positive ν on hyperbolic trajectory should give positive M (the math is
+            // odd-symmetric around ν=0). Test ν=π/4 with e=1.5; expect positive M.
+            double M = OrbitalElements.TrueToMeanAnomaly(math.PI_DBL * 0.25, 1.5);
+            Assert.Greater(M, 0.0,
+                "Hyperbolic at ν=π/4 should give positive M");
+            // Also verify reasonable magnitude — not NaN, not absurd.
+            Assert.Less(M, 10.0,
+                "Hyperbolic M at ν=π/4 should be a reasonable magnitude (well below asymptote)");
+        }
+
+        [Test]
+        public void MeanToTrueAnomaly_RoundTripPreservesValue()
+        {
+            // For an elliptical orbit, MeanToTrueAnomaly(TrueToMeanAnomaly(ν, e), e)
+            // should return ν within solver tolerance. Test several ν values across
+            // the orbit at e=0.4.
+            double e = 0.4;
+            double[] testAngles = {
+                0.0,
+                math.PI_DBL * 0.25,
+                math.PI_DBL * 0.5,
+                math.PI_DBL * 0.75,
+                math.PI_DBL,
+                math.PI_DBL * 1.25,
+                math.PI_DBL * 1.75,
+            };
+
+            foreach (double nu in testAngles)
+            {
+                double M = OrbitalElements.TrueToMeanAnomaly(nu, e);
+                double nu_recovered = OrbitalElements.MeanToTrueAnomaly(M, e);
+                // Recovered ν may differ from input by a multiple of 2π depending on
+                // which half of the orbit MeanToTrueAnomaly's atan2 picks. Normalize
+                // the difference into (-π, π] for comparison.
+                double diff = nu_recovered - nu;
+                while (diff > math.PI_DBL) diff -= 2.0 * math.PI_DBL;
+                while (diff < -math.PI_DBL) diff += 2.0 * math.PI_DBL;
+                AssertNear(0.0, diff, 1e-10,
+                    $"Round-trip ν={nu:G6} at e=0.4: expected recovery to within 1e-10 rad");
+            }
+        }
+
+        [Test]
+        public void MeanToTrueAnomaly_HyperbolicRoundTripPreservesValue()
+        {
+            // Hyperbolic round-trip. ν must stay within asymptote angle for the math
+            // to be physically meaningful; test small to moderate ν at e=1.8.
+            double e = 1.8;
+            double[] testAngles = {
+                0.0,
+                math.PI_DBL * 0.1,
+                math.PI_DBL * 0.25,
+                math.PI_DBL * 0.4,
+                -math.PI_DBL * 0.25,
+            };
+
+            foreach (double nu in testAngles)
+            {
+                double M = OrbitalElements.TrueToMeanAnomaly(nu, e);
+                double nu_recovered = OrbitalElements.MeanToTrueAnomaly(M, e);
+                AssertNear(nu, nu_recovered, 1e-10,
+                    $"Hyperbolic round-trip ν={nu:G6} at e=1.8: expected exact recovery");
+            }
+        }
+
+        [Test]
+        public void MeanMotion_EarthOrbitMatchesExpected()
+        {
+            // Earth's μ = G · 5.972e24 = 3.986e14 m³/s² (approx).
+            // For a = 7e6 m (LEO), n = √(μ/a³) = √(3.986e14 / 3.43e20) = √1.162e-6
+            //   = 0.001078 rad/s (approximately).
+            // Orbital period T = 2π/n ≈ 5828 seconds ≈ 97 minutes (LEO matches reality).
+            double a = 7.0e6;
+            double n = OrbitalElements.MeanMotion(a, EarthMu);
+            double expectedN = math.sqrt(EarthMu / (a * a * a));
+            AssertNear(expectedN, n, 1e-15,
+                "Mean motion at LEO should match direct sqrt(μ/a³) formula");
+
+            // Sanity: orbital period via T = 2π/n should be ~5828 seconds.
+            double period = 2.0 * math.PI_DBL / n;
+            Assert.Greater(period, 5800.0, "LEO period > 5800 s");
+            Assert.Less(period, 5900.0, "LEO period < 5900 s (~97 minutes)");
+        }
+
+        [Test]
+        public void MeanMotion_HyperbolicReturnsPositive()
+        {
+            // Hyperbolic orbit: a < 0. The formula uses |a| so n is positive regardless.
+            double a = -1.0e7;
+            double n = OrbitalElements.MeanMotion(a, EarthMu);
+            Assert.Greater(n, 0.0, "Mean motion should always be positive (uses |a|)");
+            // Magnitude check: should match |a|=1e7 case exactly.
+            double nPositiveA = OrbitalElements.MeanMotion(1.0e7, EarthMu);
+            AssertNear(nPositiveA, n, 1e-15,
+                "Mean motion at a=-1e7 should equal mean motion at a=+1e7 (uses |a|)");
+        }
+
+        [Test]
+        public void TrueToMeanAnomaly_NearParabolic_DoesNotThrow_AndReturnsFinite()
+        {
+            // At e = 1+1e-10, the function routes through the hyperbolic branch (e >= 1).
+            // Numerical instability is acknowledged in the XML doc; this test asserts
+            // the function doesn't throw and returns a finite value (no NaN, no infinity).
+            // Position error in the result is allowed to be O(1e-3) per the documented
+            // parabolic-instability-band tolerance.
+            double e = 1.0 + 1e-10;
+            double nu = math.PI_DBL * 0.25;
+
+            double M = OrbitalElements.TrueToMeanAnomaly(nu, e);
+
+            Assert.IsFalse(double.IsNaN(M),
+                "Near-parabolic call should not return NaN");
+            Assert.IsFalse(double.IsInfinity(M),
+                "Near-parabolic call should not return infinity");
+            // Magnitude should be reasonable (within an order of magnitude of ν).
+            Assert.Less(math.abs(M), 100.0,
+                $"Near-parabolic M magnitude should be reasonable; got {M:G6}");
+        }
+
+        [Test]
+        public void TrueToMeanAnomaly_NegativeTrueAnomaly_ReturnsNegativeMean()
+        {
+            // Spec'd in the helper XML doc: mean anomaly is signed, so negative ν
+            // produces negative M. Tests the signed-anomaly behavior the predictor work
+            // relies on (Δt computations subtract two mean anomalies and expect a
+            // signed result).
+            double e = 0.3;
+            double nu = -math.PI_DBL * 0.25;
+
+            double M = OrbitalElements.TrueToMeanAnomaly(nu, e);
+
+            Assert.Less(M, 0.0,
+                "Negative true anomaly should produce negative mean anomaly");
+            // Also verify magnitude is reasonable (between 0 and -π).
+            Assert.Greater(M, -math.PI_DBL,
+                "Negative M from ν=-π/4 should be > -π in magnitude");
         }
     }
 }
