@@ -38,8 +38,11 @@ namespace SpaceSim.Foundation.SimTick
 
         /// <summary>
         /// Vessel crosses an SOI boundary (outward to parent, or inward into a
-        /// child). Predictor lands in a future commit (commit 046+); enum value
-        /// reserved here per the extensibility-hook contract.
+        /// child). Predictor implemented in commit 046 — see
+        /// <see cref="SpaceSim.Foundation.Vessels.SoiCrossingPredictor"/>.
+        /// Populated each sim-tick by
+        /// <see cref="SpaceSim.Foundation.Vessels.VesselEventPredictionDriver"/>
+        /// alongside Periapsis and Apoapsis events.
         /// </summary>
         SoiCrossing,
 

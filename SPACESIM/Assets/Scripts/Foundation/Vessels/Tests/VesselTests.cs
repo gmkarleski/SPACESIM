@@ -2238,5 +2238,155 @@ namespace SpaceSim.Foundation.Vessels.Tests
             Assert.AreEqual(2, VesselEventPredictionDriver.PredictionUpdateCount,
                 "PredictionUpdateCount should be 2 after two ticks");
         }
+
+        // ----- VesselEventPredictionDriver + SoiCrossingPredictor integration (commit 046 Stage 2) -----
+
+        // Test-scale Earth SOI for SOI-crossing scenarios. Reflection-set on _body to
+        // override the default PositiveInfinity. Matches the value used in
+        // SoiCrossingPredictorTests for consistency.
+        private const double TestEarthSoiRadiusMeters = 9.24e8;
+
+        /// <summary>
+        /// Reflection helper: assign a finite SOI radius to <see cref="_body"/> and
+        /// invoke <see cref="ReferenceBody.InitializeBodyForTesting"/> so the body's
+        /// PositionWorld, BodyId, and registry registration are in place. Used by
+        /// SOI-crossing integration tests to override the default infinite-SOI
+        /// top-level body.
+        /// </summary>
+        private void SetEarthFiniteSoiAndInitialize(double soiRadiusMeters)
+        {
+            var soiField = typeof(ReferenceBody).GetField(
+                "soiRadiusMeters",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            soiField.SetValue(_body, soiRadiusMeters);
+            _body.InitializeBodyForTesting();
+        }
+
+        /// <summary>
+        /// Build a KeplerState with periapsis at 2e8 m (above LEO to keep solver
+        /// stable per the Stage 1 e &lt; 0.8 constraint) and apoapsis at the given
+        /// multiplier of Earth's test SOI. Returns a state whose orbit crosses
+        /// Earth's SOI on its way to apoapsis.
+        /// </summary>
+        private KeplerState NewCrossingKeplerState(double apoMultiplierOfEarthSoi = 1.5)
+        {
+            double rPeri = 2.0e8;
+            double rApo = apoMultiplierOfEarthSoi * TestEarthSoiRadiusMeters;
+            double a = 0.5 * (rPeri + rApo);
+            double e = (rApo - rPeri) / (rApo + rPeri);
+            return new KeplerState
+            {
+                SemiMajorAxis = a,
+                Eccentricity = e,
+                Inclination = 0.0,
+                LongitudeOfAscendingNode = 0.0,
+                ArgumentOfPeriapsis = 0.0,
+                TrueAnomalyAtEpoch = 0.0,
+                EpochTick = 0,
+                ReferenceBodyId = _body != null ? _body.BodyId : Guid.Empty,
+            };
+        }
+
+        [Test]
+        public void EventPredictionDriver_OnTickAdvanced_PopulatesSoiTransitionTickOnKeplerRailsVessel()
+        {
+            // Kepler-rails vessel with an orbit that crosses Earth's (finite) SOI on
+            // its way to apoapsis. After one TickAdvanced fire, NextSoiTransitionTick
+            // should be populated alongside the existing periapsis/apoapsis fields.
+            SetUpEventPredictionDriver();
+            SetEarthFiniteSoiAndInitialize(TestEarthSoiRadiusMeters);
+
+            var kepler = NewCrossingKeplerState();
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+
+            Assert.IsNull(_vessel.State.KeplerState.NextSoiTransitionTick,
+                "Sanity: NextSoiTransitionTick should be null before driver fires");
+
+            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
+
+            Assert.IsNotNull(_vessel.State.KeplerState.NextSoiTransitionTick,
+                "NextSoiTransitionTick should be populated after driver fires when " +
+                "orbit crosses Earth's SOI");
+            Assert.Greater(_vessel.State.KeplerState.NextSoiTransitionTick.Value, 0,
+                "Predicted crossing tick should be in the future");
+        }
+
+        [Test]
+        public void EventPredictionDriver_OnTickAdvanced_UpdatesQueueWithSoiCrossing()
+        {
+            // Same vessel/orbit setup as the previous test; verify the EventQueue
+            // gains a SoiCrossing entry alongside Periapsis/Apoapsis.
+            var controller = SetUpEventPredictionDriver();
+            SetEarthFiniteSoiAndInitialize(TestEarthSoiRadiusMeters);
+
+            var kepler = NewCrossingKeplerState();
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+
+            Assert.AreEqual(0, controller.EventQueue.Count,
+                "Sanity: queue should be empty before driver fires");
+
+            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
+
+            // Elliptical orbit with crossing: Periapsis + Apoapsis + SoiCrossing = 3 entries.
+            Assert.AreEqual(3, controller.EventQueue.Count,
+                "Queue should have Periapsis, Apoapsis, and SoiCrossing entries for an " +
+                "elliptical orbit that crosses Earth's SOI");
+        }
+
+        [Test]
+        public void EventPredictionDriver_OnTickAdvanced_NoSoiCrossingExpected_NextSoiTransitionTickNull()
+        {
+            // Vessel in low circular orbit fully inside Earth's (finite) SOI. No
+            // children registered. The predictor's closed-form path executes and
+            // returns null at the rApo < SoiRadius early-return. The driver writes
+            // null to NextSoiTransitionTick; the queue receives no SoiCrossing entry.
+            var controller = SetUpEventPredictionDriver();
+            SetEarthFiniteSoiAndInitialize(TestEarthSoiRadiusMeters);
+
+            // Default NewKeplerState is circular LEO (rApo = LeoRadius = 7e6 m, far
+            // below 9.24e8 m Earth SOI) — orbit contained.
+            var kepler = NewKeplerState();
+            kepler.Eccentricity = 0.1;  // mildly elliptical so Periapsis/Apoapsis still populate
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+
+            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
+
+            Assert.IsNull(_vessel.State.KeplerState.NextSoiTransitionTick,
+                "NextSoiTransitionTick should be null when orbit is fully inside Earth's SOI");
+
+            // Queue should have Periapsis + Apoapsis (2 entries), not 3.
+            Assert.AreEqual(2, controller.EventQueue.Count,
+                "Queue should have only Periapsis + Apoapsis entries when no SOI crossing is predicted");
+        }
+
+        [Test]
+        public void EventPredictionDriver_OnTickAdvanced_BothPredictorsRun_BothFieldsPopulated()
+        {
+            // Vessel with elliptical orbit that crosses Earth's SOI. All three
+            // prediction fields should populate after one driver tick.
+            var controller = SetUpEventPredictionDriver();
+            SetEarthFiniteSoiAndInitialize(TestEarthSoiRadiusMeters);
+
+            var kepler = NewCrossingKeplerState();
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+
+            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
+
+            Assert.IsNotNull(_vessel.State.KeplerState.NextPeriapsisTick,
+                "NextPeriapsisTick should be populated for elliptical orbit");
+            Assert.IsNotNull(_vessel.State.KeplerState.NextApoapsisTick,
+                "NextApoapsisTick should be populated for elliptical orbit");
+            Assert.IsNotNull(_vessel.State.KeplerState.NextSoiTransitionTick,
+                "NextSoiTransitionTick should be populated when orbit crosses Earth's SOI");
+
+            // All three queue entries present.
+            Assert.AreEqual(3, controller.EventQueue.Count,
+                "Queue should have all three event-type entries for a crossing elliptical orbit");
+
+            // Counter semantics: both EvaluationCount and PredictionUpdateCount
+            // should equal 1 (one vessel examined, PredictAndUpdate completed).
+            Assert.AreEqual(1, VesselEventPredictionDriver.EvaluationCount);
+            Assert.AreEqual(1, VesselEventPredictionDriver.PredictionUpdateCount);
+        }
     }
 }

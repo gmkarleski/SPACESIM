@@ -67,9 +67,15 @@ namespace SpaceSim.Foundation.Vessels
         public long? NextApoapsisTick;
 
         /// <summary>
-        /// Pre-computed sim-tick of next SOI transition (e.g., escaping current body's SOI
-        /// or entering a child SOI). Null if no SOI transition is predicted.
-        /// PHASE 0 SCOPE: left null. Multi-body SOI logic is Phase 4+ work.
+        /// Pre-computed sim-tick of next SOI transition — earliest of outward exit
+        /// from the current body's SOI or inward entry into one of its children's
+        /// SOIs. Populated by <see cref="VesselEventPredictionDriver"/> via
+        /// <see cref="SoiCrossingPredictor"/> (commit 046). Predicted at each
+        /// sim-tick for KeplerRails vessels with non-null KeplerState. Null when no
+        /// crossing is predicted in the lookahead horizon (one orbital period for
+        /// elliptical, ~1 game year for hyperbolic), when the current body has
+        /// infinite SOI (top-level convention), or when the orbit is fully
+        /// contained within the SOI.
         /// </summary>
         public long? NextSoiTransitionTick;
 

@@ -173,12 +173,14 @@ KeplerState {
     // for the rationale.
     next_periapsis_tick: Option<SimTickCount>     // When vessel reaches periapsis; None for hyperbolic post-periapsis
     next_apoapsis_tick: Option<SimTickCount>      // None for hyperbolic orbits (no apoapsis exists)
-    next_soi_transition_tick: Option<SimTickCount>  // SOI exit, if applicable
+    next_soi_transition_tick: Option<SimTickCount>  // Earliest tick at which the vessel crosses an SOI boundary (outward exit or inward child entry); populated by SoiCrossingPredictor (commit 046).
     next_mode_transition_tick: Option<SimTickCount> // Will need PhysX activation when
 }
 ```
 
 **Nullable event-prediction fields (amended at commit 045):** All four `next_*_tick` fields are `Option<SimTickCount>`, not `SimTickCount`. Hyperbolic orbits genuinely have no future apoapsis, and post-periapsis hyperbolic trajectories have no future periapsis either. Nullable typing makes "no future event" explicit in the type rather than encoding "no event" via a sentinel value like `long.MaxValue`. The original `commit 026` contract had `next_periapsis_tick` and `next_apoapsis_tick` as non-nullable; the implementation has always used nullable (`long?` in C#). This amendment aligns the contract with the implementation's honest type.
+
+**SOI-transition null cases (commit 046):** `next_soi_transition_tick` is null when no SOI crossing is predicted within the lookahead horizon (one orbital period for elliptical, ~1 game year for hyperbolic), when the current body has infinite SOI (top-level body convention), or when the orbit is fully contained within the SOI (apoapsis distance below SOI radius). The earliest of outward-exit and inward-child-entry crossings wins when both are predicted. See `SoiCrossingPredictor` XML doc for the two math paths (outward closed-form via conic equation, inward sampled-and-refined via bisection) and the constant-body-position assumption that Phase 0/1 honors.
 
 ### 2.4 Interstellar-cruise mode state
 

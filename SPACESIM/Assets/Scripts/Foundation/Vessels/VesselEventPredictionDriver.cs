@@ -31,10 +31,37 @@ namespace SpaceSim.Foundation.Vessels
     ///
     /// <para>
     /// <strong>COMMIT 045 SCOPE:</strong> only the periapsis and apoapsis events
-    /// get populated in this commit. SOI-crossing, atmospheric-entry,
+    /// got populated in that commit. <strong>COMMIT 046 SCOPE (Stage 2):</strong>
+    /// SOI-crossing events also populated via
+    /// <see cref="SoiCrossingPredictor.PredictNextCrossing"/>. Atmospheric-entry,
     /// surface-impact, scheduled-burn, and interstellar-arrival predictors land
     /// in subsequent commits (the <see cref="SimEventType"/> enum values exist
     /// already per CONSTRAINTS §2's extensibility hook).
+    /// </para>
+    ///
+    /// <para>
+    /// <strong>PER-PREDICTOR EXCEPTION ISOLATION (commit 046):</strong>
+    /// Inside <see cref="PredictAndUpdate"/>, each predictor (PeriapsisApoapsis,
+    /// SoiCrossing) runs inside its own try/catch. A failure in one predictor logs
+    /// an error and the other predictor still executes. This is per-predictor
+    /// isolation rather than per-vessel-all-or-nothing — the netcode contract's
+    /// commitment to keep event predictions current is honored on a best-effort
+    /// basis even when one predictor degrades. The outer try/catch in
+    /// <see cref="OnTickAdvanced"/> remains as a safety net for schema-invariant
+    /// violations or unforeseen failures that propagate past the inner catches.
+    /// </para>
+    ///
+    /// <para>
+    /// <strong>COUNTER SEMANTICS:</strong>
+    /// <see cref="EvaluationCount"/> increments for every Kepler-rails vessel
+    /// examined. <see cref="PredictionUpdateCount"/> increments for every vessel
+    /// for which <see cref="PredictAndUpdate"/> executed to completion (i.e., no
+    /// unhandled exception reached the outer catch). Individual predictor
+    /// failures inside <see cref="PredictAndUpdate"/> are logged via inner
+    /// try/catch and do not affect either counter beyond the log message. This
+    /// means PredictionUpdateCount can equal EvaluationCount even when one of the
+    /// predictors threw — the structural completion of PredictAndUpdate is what
+    /// the counter tracks.
     /// </para>
     /// </summary>
     public static class VesselEventPredictionDriver
@@ -162,9 +189,16 @@ namespace SpaceSim.Foundation.Vessels
         }
 
         /// <summary>
-        /// Per-vessel predict + update: extracted from <see cref="OnTickAdvanced"/>
-        /// for readability. Throws on internal failure; the outer loop's try/catch
-        /// handles isolation.
+        /// Per-vessel predict + update. Each predictor (PeriapsisApoapsis,
+        /// SoiCrossing) runs inside its own try/catch for per-predictor isolation.
+        /// A failure in one predictor logs an error and the other predictor still
+        /// executes. The outer try/catch in <see cref="OnTickAdvanced"/> handles
+        /// schema-invariant violations or unforeseen failures that escape the
+        /// inner catches.
+        ///
+        /// Predictor order: PeriapsisApoapsisPredictor first, then
+        /// SoiCrossingPredictor. Stable iteration order keeps the diagnostic logs
+        /// and queue update ordering deterministic across ticks.
         /// </summary>
         private static void PredictAndUpdate(
             Vessel vessel,
@@ -175,20 +209,67 @@ namespace SpaceSim.Foundation.Vessels
             KeplerState kepler = vessel.State.KeplerState;
             Guid vesselId = vessel.State.VesselId;
 
-            (long? periapsisTick, long? apoapsisTick) = PeriapsisApoapsisPredictor.Predict(
-                kepler,
-                tickNumber,
-                currentBody.Mu,
-                SimTickController.SimTickIntervalSeconds);
+            // ----- Periapsis / Apoapsis predictor (per-predictor isolation) -----
+            try
+            {
+                (long? periapsisTick, long? apoapsisTick) =
+                    PeriapsisApoapsisPredictor.Predict(
+                        kepler,
+                        tickNumber,
+                        currentBody.Mu,
+                        SimTickController.SimTickIntervalSeconds);
 
-            // Write schema fields per netcode contract §2.3.
-            kepler.NextPeriapsisTick = periapsisTick;
-            kepler.NextApoapsisTick = apoapsisTick;
+                // Write schema fields per netcode contract §2.3. Null returns
+                // (hyperbolic-post-periapsis, hyperbolic apoapsis, overflow defense)
+                // are written through directly — the field type is long? and the
+                // queue's UpdateVesselEntry handles null cleanly (removes any
+                // existing entry).
+                kepler.NextPeriapsisTick = periapsisTick;
+                kepler.NextApoapsisTick = apoapsisTick;
 
-            // Update priority queue entries. UpdateVesselEntry handles add/update/
-            // remove uniformly (null tick removes the entry).
-            controller.EventQueue.UpdateVesselEntry(vesselId, SimEventType.Periapsis, periapsisTick);
-            controller.EventQueue.UpdateVesselEntry(vesselId, SimEventType.Apoapsis, apoapsisTick);
+                controller.EventQueue.UpdateVesselEntry(
+                    vesselId, SimEventType.Periapsis, periapsisTick);
+                controller.EventQueue.UpdateVesselEntry(
+                    vesselId, SimEventType.Apoapsis, apoapsisTick);
+            }
+            catch (Exception ex)
+            {
+                string name = vessel.gameObject != null
+                    ? vessel.gameObject.name : "(null)";
+                Debug.LogError(
+                    $"VesselEventPredictionDriver: PeriapsisApoapsisPredictor failed " +
+                    $"on vessel '{name}' at tick {tickNumber}: {ex}");
+                // Continue to SoiCrossingPredictor — per-predictor isolation.
+            }
+
+            // ----- SOI crossing predictor (per-predictor isolation, commit 046) -----
+            try
+            {
+                long? soiCrossingTick = SoiCrossingPredictor.PredictNextCrossing(
+                    kepler,
+                    currentBody,
+                    tickNumber,
+                    SimTickController.SimTickIntervalSeconds,
+                    SoiCrossingPredictor.DetectionAggressiveness.Pragmatic);
+
+                // Write schema field per netcode contract §2.3 (amendment lands in
+                // commit 046 Stage 3). Null on no crossing within horizon — cleanup
+                // of any stale value is automatic via the field assignment.
+                kepler.NextSoiTransitionTick = soiCrossingTick;
+
+                controller.EventQueue.UpdateVesselEntry(
+                    vesselId, SimEventType.SoiCrossing, soiCrossingTick);
+            }
+            catch (Exception ex)
+            {
+                string name = vessel.gameObject != null
+                    ? vessel.gameObject.name : "(null)";
+                Debug.LogError(
+                    $"VesselEventPredictionDriver: SoiCrossingPredictor failed " +
+                    $"on vessel '{name}' at tick {tickNumber}: {ex}");
+                // PeriapsisApoapsis writes already landed above — that's per-predictor
+                // isolation working as designed.
+            }
         }
     }
 }
