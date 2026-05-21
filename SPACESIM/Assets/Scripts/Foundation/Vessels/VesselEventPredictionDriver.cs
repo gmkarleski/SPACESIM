@@ -31,12 +31,34 @@ namespace SpaceSim.Foundation.Vessels
     ///
     /// <para>
     /// <strong>COMMIT 045 SCOPE:</strong> only the periapsis and apoapsis events
-    /// got populated in that commit. <strong>COMMIT 046 SCOPE (Stage 2):</strong>
+    /// got populated in that commit. <strong>COMMIT 046 SCOPE:</strong>
     /// SOI-crossing events also populated via
-    /// <see cref="SoiCrossingPredictor.PredictNextCrossing"/>. Atmospheric-entry,
-    /// surface-impact, scheduled-burn, and interstellar-arrival predictors land
-    /// in subsequent commits (the <see cref="SimEventType"/> enum values exist
-    /// already per CONSTRAINTS §2's extensibility hook).
+    /// <see cref="SoiCrossingPredictor.PredictNextCrossing"/>.
+    /// <strong>COMMIT 047 SCOPE (Stage 2):</strong> atmospheric-entry events via
+    /// <see cref="AtmosphericEntryPredictor.PredictNextEntry"/> and surface-impact
+    /// events via <see cref="SurfaceImpactPredictor.PredictNextImpact"/>. Both
+    /// populate <see cref="KeplerState.NextModeTransitionTick"/> via min-of-both
+    /// aggregation (the field holds the EARLIEST of the two predicted ticks).
+    /// Scheduled-burn and interstellar-arrival predictors land in subsequent
+    /// commits.
+    /// </para>
+    ///
+    /// <para>
+    /// <strong>NextModeTransitionTick AGGREGATION (commit 047):</strong>
+    /// Multiple predictors can populate
+    /// <see cref="KeplerState.NextModeTransitionTick"/> — atmospheric entry,
+    /// surface impact, and future scheduled-burn / interstellar-arrival
+    /// predictors. The driver aggregates these via min-of-all (using
+    /// <see cref="MinNullable"/>) so the field stores the earliest predicted
+    /// mode-transition event. The commit-043 trigger evaluator
+    /// (<c>Vessel.IsAtmosphericEntryPredicted</c>) reads this field and fires the
+    /// K→P mode transition when the tick is within one of the current sim-tick.
+    /// One imprecision worth noting: the trigger reason label
+    /// (<c>TransitionTriggerReason.AtmosphericEntryPredicted</c>) is generic
+    /// "mode transition imminent" semantics — it fires for surface impact too if
+    /// that's the earliest event. Renaming the trigger reason to something
+    /// neutral is deferred to a separate cleanup commit; commit 047 accepts the
+    /// label imprecision for now.
     /// </para>
     ///
     /// <para>
@@ -270,6 +292,85 @@ namespace SpaceSim.Foundation.Vessels
                 // PeriapsisApoapsis writes already landed above — that's per-predictor
                 // isolation working as designed.
             }
+
+            // ----- Atmospheric entry + surface impact predictors (commit 047) -----
+            //
+            // Both predictors populate KeplerState.NextModeTransitionTick via
+            // min-of-both aggregation AFTER both have run. The per-predictor
+            // try/catch blocks isolate failures; an exception in either predictor
+            // leaves that local tick variable null, and the aggregation step still
+            // writes whatever the other predictor produced (or null if both threw).
+            long? atmosphericEntryTick = null;
+            long? surfaceImpactTick = null;
+
+            try
+            {
+                atmosphericEntryTick = AtmosphericEntryPredictor.PredictNextEntry(
+                    kepler,
+                    currentBody,
+                    tickNumber,
+                    SimTickController.SimTickIntervalSeconds);
+
+                controller.EventQueue.UpdateVesselEntry(
+                    vesselId, SimEventType.AtmosphericEntry, atmosphericEntryTick);
+            }
+            catch (Exception ex)
+            {
+                string name = vessel.gameObject != null
+                    ? vessel.gameObject.name : "(null)";
+                Debug.LogError(
+                    $"VesselEventPredictionDriver: AtmosphericEntryPredictor failed " +
+                    $"on vessel '{name}' at tick {tickNumber}: {ex}");
+                // atmosphericEntryTick stays null; surface-impact predictor still runs.
+            }
+
+            try
+            {
+                surfaceImpactTick = SurfaceImpactPredictor.PredictNextImpact(
+                    kepler,
+                    currentBody,
+                    tickNumber,
+                    SimTickController.SimTickIntervalSeconds);
+
+                controller.EventQueue.UpdateVesselEntry(
+                    vesselId, SimEventType.SurfaceImpact, surfaceImpactTick);
+            }
+            catch (Exception ex)
+            {
+                string name = vessel.gameObject != null
+                    ? vessel.gameObject.name : "(null)";
+                Debug.LogError(
+                    $"VesselEventPredictionDriver: SurfaceImpactPredictor failed " +
+                    $"on vessel '{name}' at tick {tickNumber}: {ex}");
+                // surfaceImpactTick stays null.
+            }
+
+            // Aggregate atmospheric + surface ticks into NextModeTransitionTick.
+            // Earliest of the two (or null if both null). This aggregation step
+            // lives OUTSIDE both per-predictor try/catch blocks so it always runs;
+            // if both predictors threw, both locals are null and MinNullable
+            // produces null (clean stale-value cleanup on the field).
+            kepler.NextModeTransitionTick = MinNullable(
+                atmosphericEntryTick, surfaceImpactTick);
+        }
+
+        /// <summary>
+        /// Return the smaller of two nullable longs. Null is treated as "no value";
+        /// if both null, returns null; if one null, returns the other.
+        ///
+        /// Uses <see cref="System.Math.Min(long, long)"/> rather than
+        /// <c>Unity.Mathematics.math.min</c> because the latter has no <c>long</c>
+        /// overload — only int, uint, float, and double — and would silently
+        /// coerce to double, losing precision near <c>long.MaxValue</c>. Same
+        /// pattern as <c>SoiCrossingPredictor.MinNullable</c> (intentional small
+        /// duplication: each module's nullable-long min is a 5-line utility, and
+        /// extracting to a shared math library would be over-engineering).
+        /// </summary>
+        private static long? MinNullable(long? a, long? b)
+        {
+            if (!a.HasValue) return b;
+            if (!b.HasValue) return a;
+            return System.Math.Min(a.Value, b.Value);
         }
     }
 }

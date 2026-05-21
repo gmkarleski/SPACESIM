@@ -48,13 +48,21 @@ namespace SpaceSim.Foundation.SimTick
 
         /// <summary>
         /// Vessel's trajectory predicts atmospheric-entry altitude crossing.
-        /// Predictor lands in a future commit (commit 046+); reserved.
+        /// Predictor implemented in commit 047 — see
+        /// <see cref="SpaceSim.Foundation.Vessels.AtmosphericEntryPredictor"/>.
+        /// Populated each sim-tick by
+        /// <see cref="SpaceSim.Foundation.Vessels.VesselEventPredictionDriver"/>
+        /// alongside the other event types.
         /// </summary>
         AtmosphericEntry,
 
         /// <summary>
         /// Vessel's trajectory intersects a body's surface (lithobraking inbound).
-        /// Predictor lands in a future commit (commit 046+); reserved.
+        /// Predictor implemented in commit 047 — see
+        /// <see cref="SpaceSim.Foundation.Vessels.SurfaceImpactPredictor"/>.
+        /// Populated each sim-tick by
+        /// <see cref="SpaceSim.Foundation.Vessels.VesselEventPredictionDriver"/>
+        /// alongside the other event types.
         /// </summary>
         SurfaceImpact,
 

@@ -858,5 +858,216 @@ namespace SpaceSim.Foundation.Vessels.Tests
             Assert.Greater(M, -math.PI_DBL,
                 "Negative M from ν=-π/4 should be > -π in magnitude");
         }
+
+        // ----- SolveConicAtRadius (commit 047 Stage 1) -----
+
+        private const double TickIntervalSeconds = 1.0 / 30.0;  // 30 Hz sim-tick
+
+        /// <summary>
+        /// Helper: build a default KeplerState at LeoRadius with the given eccentricity
+        /// and initial true anomaly. ω=0, Ω=0, i=0 (equatorial, periapsis at +X).
+        /// </summary>
+        private static KeplerState BuildState(
+            double semiMajorAxis, double eccentricity, double trueAnomalyAtEpoch)
+        {
+            return new KeplerState
+            {
+                SemiMajorAxis = semiMajorAxis,
+                Eccentricity = eccentricity,
+                Inclination = 0.0,
+                LongitudeOfAscendingNode = 0.0,
+                ArgumentOfPeriapsis = 0.0,
+                TrueAnomalyAtEpoch = trueAnomalyAtEpoch,
+                EpochTick = 0,
+                ReferenceBodyId = TestBodyId,
+            };
+        }
+
+        [Test]
+        public void SolveConicAtRadius_OrbitFullyInsideRadius_ReturnsNull()
+        {
+            // Circular LEO orbit at r=7e6 m, target radius 1e9 m (way outside LEO).
+            // rApo < targetRadius → orbit fully inside → return null.
+            var state = BuildState(LeoRadius, eccentricity: 0.0, trueAnomalyAtEpoch: 0.0);
+
+            long? crossing = OrbitalElements.SolveConicAtRadius(
+                state, targetRadius: 1.0e9, currentTick: 0, EarthMu, TickIntervalSeconds);
+
+            Assert.IsNull(crossing,
+                "Orbit with apoapsis < targetRadius should produce no crossing");
+        }
+
+        [Test]
+        public void SolveConicAtRadius_OrbitFullyOutsideRadius_ReturnsNull()
+        {
+            // Circular orbit at r=1e9 m, target radius 1e6 m (way inside orbit).
+            // rPeri > targetRadius → orbit fully outside → return null.
+            var state = BuildState(semiMajorAxis: 1.0e9, eccentricity: 0.0, trueAnomalyAtEpoch: 0.0);
+
+            long? crossing = OrbitalElements.SolveConicAtRadius(
+                state, targetRadius: 1.0e6, currentTick: 0, EarthMu, TickIntervalSeconds);
+
+            Assert.IsNull(crossing,
+                "Orbit with periapsis > targetRadius should produce no crossing");
+        }
+
+        [Test]
+        public void SolveConicAtRadius_EllipticalCrossing_ReturnsValidFutureTick()
+        {
+            // Elliptical orbit: rPeri = 2e8, rApo = 1.5e9 → e ≈ 0.764 (under 0.8 ceiling
+            // for Newton-Raphson convergence stability). Target radius 9.24e8 m (Earth's
+            // SOI). Vessel at periapsis (ν=0) at epoch 0. Outward crossing exists.
+            double rPeri = 2.0e8;
+            double rApo = 1.5e9;
+            double a = 0.5 * (rPeri + rApo);
+            double e = (rApo - rPeri) / (rApo + rPeri);
+            Assert.Less(e, 0.8, "Test orbit eccentricity must stay below 0.8 for solver stability");
+
+            double targetRadius = 9.24e8;
+            var state = BuildState(a, e, trueAnomalyAtEpoch: 0.0);
+
+            long? crossing = OrbitalElements.SolveConicAtRadius(
+                state, targetRadius, currentTick: 0, EarthMu, TickIntervalSeconds);
+
+            Assert.IsTrue(crossing.HasValue, "Elliptical orbit reaching targetRadius should return a crossing tick");
+            Assert.Greater(crossing.Value, 0, "Crossing should be in the future");
+
+            // Analytic expectation: cos(ν) = (p/r - 1)/e, +ν is outbound.
+            double p = a * (1.0 - e * e);
+            double cosNu = (p / targetRadius - 1.0) / e;
+            double nu = math.acos(cosNu);
+            double M = OrbitalElements.TrueToMeanAnomaly(nu, e);
+            double n = OrbitalElements.MeanMotion(a, EarthMu);
+            long expectedTick = (long)math.ceil((M / n) / TickIntervalSeconds);
+
+            Assert.AreEqual(expectedTick, crossing.Value, 2,
+                $"Elliptical crossing should land at ~{expectedTick} ticks");
+        }
+
+        [Test]
+        public void SolveConicAtRadius_HyperbolicCrossingPreperiapsis_ReturnsFutureTick()
+        {
+            // Hyperbolic orbit, vessel BEFORE periapsis (ν₀ < 0). Vessel will reach
+            // periapsis then continue outbound; the future crossing at target > rPeri
+            // is on the outbound leg after periapsis. Return tick should be positive.
+            double rPeri = LeoRadius;
+            double e = 1.5;
+            double a = rPeri / (1.0 - e);  // negative for hyperbolic
+            // Vessel currently INBOUND at ν = -0.5 rad (pre-periapsis).
+            var state = BuildState(a, e, trueAnomalyAtEpoch: -0.5);
+
+            // Target radius beyond periapsis: vessel will cross it AFTER reaching periapsis.
+            double targetRadius = 5.0e7;  // ~5x LEO radius — within reach of e=1.5 hyperbolic
+
+            long? crossing = OrbitalElements.SolveConicAtRadius(
+                state, targetRadius, currentTick: 0, EarthMu, TickIntervalSeconds);
+
+            Assert.IsTrue(crossing.HasValue,
+                "Pre-periapsis hyperbolic vessel should predict outbound crossing");
+            Assert.Greater(crossing.Value, 0, "Crossing should be in the future");
+        }
+
+        [Test]
+        public void SolveConicAtRadius_HyperbolicCrossingPostperiapsis_ReturnsFutureOnlyIfNotPassed()
+        {
+            // Hyperbolic orbit, vessel PAST periapsis on outbound leg.
+            // Sub-case A: target > vessel's current r → vessel still approaching →
+            //             future tick.
+            // Sub-case B: target < vessel's current r → vessel already past target →
+            //             null (the past crossing is not a future event).
+            double rPeri = LeoRadius;
+            double e = 1.5;
+            double a = rPeri / (1.0 - e);
+
+            // Vessel at ν = +1.0 rad (well past periapsis, on outbound leg).
+            var state = BuildState(a, e, trueAnomalyAtEpoch: 1.0);
+
+            // Vessel's current radius at ν=1.0:
+            double p = a * (1.0 - e * e);
+            double rNow = p / (1.0 + e * math.cos(1.0));
+
+            // Sub-case A: target slightly beyond current radius — should return future tick.
+            double targetAhead = rNow * 1.5;
+            long? crossingAhead = OrbitalElements.SolveConicAtRadius(
+                state, targetAhead, currentTick: 0, EarthMu, TickIntervalSeconds);
+            Assert.IsTrue(crossingAhead.HasValue,
+                $"Hyperbolic post-periapsis vessel at r={rNow:E3} should predict future crossing at r={targetAhead:E3}");
+            Assert.Greater(crossingAhead.Value, 0, "Future crossing should be positive tick");
+
+            // Sub-case B: target between rPeri and rNow — vessel already passed it.
+            // Only the inbound branch's ν reaches this radius (negative ν, pre-periapsis);
+            // post-periapsis vessel won't return. Should yield null.
+            double targetBehind = (rPeri + rNow) * 0.5;
+            long? crossingBehind = OrbitalElements.SolveConicAtRadius(
+                state, targetBehind, currentTick: 0, EarthMu, TickIntervalSeconds);
+            Assert.IsNull(crossingBehind,
+                $"Hyperbolic post-periapsis vessel at r={rNow:E3} cannot reach past r={targetBehind:E3} again");
+        }
+
+        [Test]
+        public void SolveConicAtRadius_BoundaryHugCircularAtRadius_ReturnsNull()
+        {
+            // Circular orbit at exactly target radius. Without the boundary-hug guard,
+            // floating-point rounding in cos(ν) = (p/r - 1)/e would either error out
+            // or report a spurious crossing every period. The 1.0m tolerance catches
+            // this cleanly.
+            double r = 1.0e8;
+            var state = BuildState(semiMajorAxis: r, eccentricity: 0.0, trueAnomalyAtEpoch: 0.0);
+
+            long? crossing = OrbitalElements.SolveConicAtRadius(
+                state, targetRadius: r, currentTick: 0, EarthMu, TickIntervalSeconds);
+
+            Assert.IsNull(crossing,
+                "Circular orbit at exactly target radius should be caught by boundary-hug guard");
+        }
+
+        [Test]
+        public void SolveConicAtRadius_OverflowDefense_ReturnsNull()
+        {
+            // Tiny gravitational parameter (1 kg body, μ = G ≈ 6.67e-11) combined with
+            // a very large orbit produces astronomically large period. Time-to-crossing
+            // exceeds long.MaxValue/2 ticks; overflow defense returns null.
+            double tinyMu = CoordinateMath.G * 1.0;  // μ for 1 kg
+            double rPeri = 1.0e11;
+            double e = 0.5;
+            double a = rPeri / (1.0 - e);  // a = 2e11
+            var state = BuildState(a, e, trueAnomalyAtEpoch: 0.0);
+
+            // Target radius reachable on orbit (apoapsis = 3e11; choose 2e11 between
+            // peri and apo). Crossing math would produce a real future event in seconds,
+            // but seconds → ticks blows past long.MaxValue/2.
+            double targetRadius = 2.0e11;
+
+            long? crossing = OrbitalElements.SolveConicAtRadius(
+                state, targetRadius, currentTick: 0, tinyMu, TickIntervalSeconds);
+
+            Assert.IsNull(crossing,
+                "Very long-period orbit with crossing tick beyond long.MaxValue/2 should return null via overflow defense");
+        }
+
+        [Test]
+        public void SolveConicAtRadius_VeryNearParabolic_DoesNotThrow()
+        {
+            // Eccentricity just outside the parabolic-instability band on the hyperbolic
+            // side. The helper should not throw — at worst it returns null or a
+            // numerical-noise-affected result. This is a smoke test for stability
+            // near e=1, not a correctness assertion.
+            double rPeri = LeoRadius;
+            double e = 1.0 + OrbitalElements.ParabolicInstabilityBand * 2.0;  // just outside the band
+            double a = rPeri / (1.0 - e);  // very large negative number
+            var state = BuildState(a, e, trueAnomalyAtEpoch: 0.0);
+
+            // Should not throw regardless of outcome.
+            long? crossing = OrbitalElements.SolveConicAtRadius(
+                state, targetRadius: 1.0e9, currentTick: 0, EarthMu, TickIntervalSeconds);
+
+            // Output may be null or a finite future tick; both are acceptable.
+            // The test exists to lock in "no exception thrown" for the near-parabolic edge.
+            if (crossing.HasValue)
+            {
+                Assert.Greater(crossing.Value, 0,
+                    "If a crossing is reported near parabolic, it must be in the future");
+            }
+        }
     }
 }

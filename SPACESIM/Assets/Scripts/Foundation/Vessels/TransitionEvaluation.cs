@@ -83,8 +83,18 @@ namespace SpaceSim.Foundation.Vessels
         /// <summary>K→P trigger: vessel entered within 50 km of any active vessel.</summary>
         ProximityToActiveVessel,
 
-        /// <summary>K→P trigger: predicted atmospheric entry within the next sim-tick.
-        /// Reads <see cref="KeplerState.NextModeTransitionTick"/>; Phase 0 stub (always null).</summary>
+        /// <summary>K→P trigger: predicted mode transition imminent within the next
+        /// sim-tick. Reads <see cref="KeplerState.NextModeTransitionTick"/>.
+        ///
+        /// HISTORICAL NAMING / IMPRECISE AS OF COMMIT 047: this enum value retains
+        /// its "AtmosphericEntryPredicted" name from commit 043 when atmospheric
+        /// entry was the only contributor to <c>NextModeTransitionTick</c>. As of
+        /// commit 047, the field is N-way aggregated (atmospheric entry + surface
+        /// impact, with future scheduled-burn / interstellar-arrival), so this
+        /// trigger reason fires for any populated mode-transition tick — not only
+        /// atmospheric entry. The label rename / split is a known cosmetic concern
+        /// deferred to a separate cleanup commit; see DECISIONS "Atmospheric entry
+        /// + surface impact predictors (commit 047)" entry for the rationale.</summary>
         AtmosphericEntryPredicted,
 
         /// <summary>K→P trigger: player switched focus to this vessel. Phase 0 stub (no focus subsystem).</summary>

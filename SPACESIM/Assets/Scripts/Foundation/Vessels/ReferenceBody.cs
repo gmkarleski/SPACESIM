@@ -84,6 +84,66 @@ namespace SpaceSim.Foundation.Vessels
         public double SoiRadiusMeters => soiRadiusMeters;
 
         /// <summary>
+        /// Distance from this body's center to its surface, in meters. The
+        /// <see cref="SpaceSim.Foundation.Vessels.SurfaceImpactPredictor"/> uses this
+        /// (commit 047) to predict the sim-tick at which a vessel's orbit would
+        /// intersect the body's surface — i.e., lithobraking — and populate the
+        /// vessel's <see cref="KeplerState.NextModeTransitionTick"/>.
+        ///
+        /// PHASE 1 SCOPE (commit 047): hand-set per body via the Inspector. Default
+        /// 6.371e6 (Earth-equivalent at 1/1 scale; at the CONSTRAINTS §2 default 1/8
+        /// solar-system scale, real-world bodies translate to ~800 km surface radius
+        /// for an Earth-equivalent, so test scenes will typically override this).
+        ///
+        /// PHASE 4+ DEFERRED: procgen bodies will compute this from per-body
+        /// parameters at scene-build time and write the value through to the
+        /// Inspector-equivalent field at runtime. The runtime field stays the
+        /// canonical storage; only the population path differs.
+        /// </summary>
+        [SerializeField, Tooltip("Distance from body center to surface, in meters. Default Earth-like 6,371 km. Override per body in Phase 1 scenes; procgen-populated in Phase 4+.")]
+        private double surfaceRadiusMeters = 6.371e6;
+
+        /// <summary>Surface radius in meters. See backing field doc for semantics.</summary>
+        public double SurfaceRadiusMeters => surfaceRadiusMeters;
+
+        /// <summary>
+        /// Height above the surface at which the atmosphere effectively ends, in
+        /// meters. The <see cref="SpaceSim.Foundation.Vessels.AtmosphericEntryPredictor"/>
+        /// uses this (commit 047) to predict the sim-tick at which a vessel's orbit
+        /// crosses the atmospheric boundary inbound — i.e., re-entry — and populate
+        /// the vessel's <see cref="KeplerState.NextModeTransitionTick"/>.
+        ///
+        /// A value of 0.0 indicates a vacuum body (no atmosphere). The atmospheric
+        /// predictor returns null on vacuum bodies; no atmospheric-entry event is
+        /// ever predicted for orbits around airless worlds (Moon, asteroid, etc.).
+        ///
+        /// The atmospheric outer boundary in absolute distance from body center is
+        /// <c>SurfaceRadiusMeters + AtmosphericTopAltitudeMeters</c> — that is the
+        /// threshold radius the atmospheric-entry predictor solves for.
+        ///
+        /// PHASE 1 SCOPE (commit 047): hand-set per body via the Inspector. Default
+        /// 0.0 (vacuum) so single-body test scenes don't accidentally fire atmospheric
+        /// entry events. Atmospheric bodies (the home planet, Mars-equivalent) need a
+        /// finite value set in the Inspector — CONSTRAINTS §2 "Scaling discipline"
+        /// commits to KSP-shaped atmospheric depth, so an Earth-equivalent uses
+        /// ~70,000 m at the 1/8 default solar-system scale.
+        ///
+        /// This field stores ONLY the scalar atmospheric-top altitude — the full
+        /// density-vs-altitude profile that the Phase 5 atmospheric flight model
+        /// needs is separate work (NETCODE_CONTRACT §2.7 lists
+        /// <c>atmospheric_profile</c> as Phase 4+ deferred). Commit 047 needs only
+        /// the boundary altitude, not the density curve, to fire the entry event.
+        /// </summary>
+        [SerializeField, Tooltip("Height above surface where atmosphere ends, in meters. Zero indicates vacuum body. Default 0. Atmospheric bodies set ~70,000 m for Earth-equivalent at 1/8 scale per CONSTRAINTS §2 KSP-shaped depth.")]
+        private double atmosphericTopAltitudeMeters = 0.0;
+
+        /// <summary>
+        /// Atmospheric top altitude (height above surface) in meters. See backing
+        /// field doc for semantics. Zero = vacuum body.
+        /// </summary>
+        public double AtmosphericTopAltitudeMeters => atmosphericTopAltitudeMeters;
+
+        /// <summary>
         /// Parent body in the hierarchy. Null for top-level bodies (the star at the root
         /// of a star system; in Phase 0 / Phase 1 single-body scenes, the lone body).
         ///

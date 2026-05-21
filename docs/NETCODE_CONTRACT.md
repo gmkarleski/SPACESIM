@@ -174,13 +174,15 @@ KeplerState {
     next_periapsis_tick: Option<SimTickCount>     // When vessel reaches periapsis; None for hyperbolic post-periapsis
     next_apoapsis_tick: Option<SimTickCount>      // None for hyperbolic orbits (no apoapsis exists)
     next_soi_transition_tick: Option<SimTickCount>  // Earliest tick at which the vessel crosses an SOI boundary (outward exit or inward child entry); populated by SoiCrossingPredictor (commit 046).
-    next_mode_transition_tick: Option<SimTickCount> // Will need PhysX activation when
+    next_mode_transition_tick: Option<SimTickCount> // Earliest tick at which vessel needs PhysX-active mode (atmospheric entry or surface impact); populated by VesselEventPredictionDriver via AtmosphericEntryPredictor and SurfaceImpactPredictor (commit 047); aggregated via MinNullable.
 }
 ```
 
 **Nullable event-prediction fields (amended at commit 045):** All four `next_*_tick` fields are `Option<SimTickCount>`, not `SimTickCount`. Hyperbolic orbits genuinely have no future apoapsis, and post-periapsis hyperbolic trajectories have no future periapsis either. Nullable typing makes "no future event" explicit in the type rather than encoding "no event" via a sentinel value like `long.MaxValue`. The original `commit 026` contract had `next_periapsis_tick` and `next_apoapsis_tick` as non-nullable; the implementation has always used nullable (`long?` in C#). This amendment aligns the contract with the implementation's honest type.
 
 **SOI-transition null cases (commit 046):** `next_soi_transition_tick` is null when no SOI crossing is predicted within the lookahead horizon (one orbital period for elliptical, ~1 game year for hyperbolic), when the current body has infinite SOI (top-level body convention), or when the orbit is fully contained within the SOI (apoapsis distance below SOI radius). The earliest of outward-exit and inward-child-entry crossings wins when both are predicted. See `SoiCrossingPredictor` XML doc for the two math paths (outward closed-form via conic equation, inward sampled-and-refined via bisection) and the constant-body-position assumption that Phase 0/1 honors.
+
+**Mode-transition aggregation (commit 047):** `next_mode_transition_tick` aggregates atmospheric entry and surface impact predictions via `min()`. Null when neither predictor returns a future tick (orbit fully above the atmosphere with periapsis above the surface, vacuum body with orbit not intersecting surface, or overflow-defense kicked in for very-long-period configurations). The aggregation is one-way: the trigger evaluator reads only the earliest tick, not which event type caused it — `TransitionTriggerReason` label resolution is a known cosmetic concern deferred to a separate cleanup commit (the enum value `AtmosphericEntryPredicted` fires for both atmospheric entry and surface impact as of commit 047). Future commits adding scheduled-burn and interstellar-arrival predictors extend the aggregation to N-way (still via `min()`) without schema change.
 
 ### 2.4 Interstellar-cruise mode state
 
@@ -320,7 +322,23 @@ BodyState {
     parent_body_id: Option<BodyID>        // Parent in the hierarchy; None for top-level bodies.
                                           // SOI re-rooting reads this to find the body to re-root TO
                                           // when crossing this body's SOI outward.
-    
+
+    // Surface and atmosphere (commit 047)
+    surface_radius_meters: f64            // Distance from body center to surface, in meters.
+                                          // PHASE 1 (commit 047): hand-set per body.
+                                          // Default 6.371e6 (Earth-like).
+                                          // SurfaceImpactPredictor solves r(ν) = surface_radius_meters
+                                          // to predict the next surface-impact event.
+    atmospheric_top_altitude_meters: f64  // Height above surface where atmosphere ends, in meters.
+                                          // PHASE 1 (commit 047): hand-set per body.
+                                          // Zero indicates vacuum body (no atmospheric entry possible).
+                                          // AtmosphericEntryPredictor solves r(ν) = surface_radius_meters
+                                          //   + atmospheric_top_altitude_meters to predict the next entry.
+                                          // Distinct from atmospheric_profile (Phase 4+ deferred below) —
+                                          // this is only the scalar boundary altitude that the event
+                                          // predictors need, not the full density-vs-altitude curve that
+                                          // the Phase 5 atmospheric flight model will require.
+
     // PHASE 4+ DEFERRED FIELDS (named here so the schema is complete; not populated in Phase 0/1):
     // orbital_state_around_parent: Option<KeplerState>   // When this body orbits a parent.
     // axial_tilt: f64                                    // Radians.
@@ -332,7 +350,7 @@ BodyState {
 }
 ```
 
-**Phase 0 / Phase 1 implementation scope:** the in-code `ReferenceBody` MonoBehaviour (in the Vessels asmdef) populates `body_id`, `mass_kg`, `mu`, `position_world`, `soi_radius_meters`, and `parent_body_id`. The remaining fields are scaffolded in the doc but their in-code representation lands with the procgen-bodies work in Phase 4+. The `BodyRegistry` static class (added at commit 044) provides Guid-keyed lookup and parent→children enumeration so save-load and re-rooting math don't need to traverse Inspector wiring chains.
+**Phase 0 / Phase 1 implementation scope:** the in-code `ReferenceBody` MonoBehaviour (in the Vessels asmdef) populates `body_id`, `mass_kg`, `mu`, `position_world`, `soi_radius_meters`, `parent_body_id`, `surface_radius_meters` (commit 047), and `atmospheric_top_altitude_meters` (commit 047). The remaining fields are scaffolded in the doc but their in-code representation lands with the procgen-bodies work in Phase 4+. The `BodyRegistry` static class (added at commit 044) provides Guid-keyed lookup and parent→children enumeration so save-load and re-rooting math don't need to traverse Inspector wiring chains.
 
 **Save-load semantics:** `parent_body_id` is the persisted reference shape (Inspector references don't survive serialization). On load, `BodyRegistry.TryGetBodyById` resolves the Guid back to a runtime `ReferenceBody`. Self-cycle detection (a body wired as its own parent) is rejected at Awake with an error log; the body is treated as top-level (`parent_body_id = None`) so downstream math doesn't produce bogus orbital re-rooting.
 

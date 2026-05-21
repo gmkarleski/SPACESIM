@@ -472,6 +472,26 @@ namespace SpaceSim.Foundation.Vessels
         public const double ParabolicInstabilityBand = 1e-8;
 
         /// <summary>
+        /// Numerical tolerance for the "orbit hugs the threshold radius" edge case in
+        /// <see cref="SolveConicAtRadius"/>. If an elliptical orbit's periapsis AND
+        /// apoapsis are both within this many meters of the target radius, the orbit
+        /// is treated as numerically tangent to the boundary and no crossing is
+        /// reported. Without this guard, a circular orbit at exactly the target
+        /// radius would falsely report a crossing every period due to floating-point
+        /// rounding in <c>cos(ν) = (p/r − 1) / e</c> evaluating to values outside
+        /// <c>[-1, 1]</c> by small numerical noise.
+        ///
+        /// The 1.0 m scale is comfortable below the 100s-of-km scale of typical body
+        /// SOIs and surface radii; orbits genuinely passing within 1 m of a boundary
+        /// are below the precision the predictors operate at anyway.
+        ///
+        /// Migrated from <c>SoiCrossingPredictor</c>'s private constant at commit 047
+        /// Stage 1 so the value is shared by SOI-crossing outward, atmospheric-entry,
+        /// and surface-impact predictors via <see cref="SolveConicAtRadius"/>.
+        /// </summary>
+        public const double BoundaryHugTolerance = 1.0;
+
+        /// <summary>
         /// Mean motion n = sqrt(μ / |a|³), in radians per second. The angular rate at
         /// which mean anomaly advances along the orbit.
         ///
@@ -626,6 +646,237 @@ namespace SpaceSim.Foundation.Vessels
                     * math.tanh(hyperbolicAnomaly * 0.5);
                 return 2.0 * math.atan(tanHalfNu);
             }
+        }
+
+        // ----- Conic-equation radius solve (commit 047 Stage 1) -----
+
+        /// <summary>
+        /// Predict the next sim-tick at which a vessel on the given Kepler orbit will
+        /// reach a specified radial distance from the body center — i.e., the next
+        /// solution to <c>r(ν) = targetRadius</c> on the orbit, expressed as an
+        /// absolute future sim-tick.
+        ///
+        /// <para>USAGE:</para>
+        /// Shared math for "find when the vessel reaches radius R from the focus":
+        /// <list type="bullet">
+        ///   <item>SOI outward crossing (commit 046): targetRadius =
+        ///   <c>currentBody.SoiRadiusMeters</c>.</item>
+        ///   <item>Atmospheric entry (commit 047): targetRadius =
+        ///   <c>currentBody.SurfaceRadiusMeters + currentBody.AtmosphericTopAltitudeMeters</c>.</item>
+        ///   <item>Surface impact (commit 047): targetRadius =
+        ///   <c>currentBody.SurfaceRadiusMeters</c>.</item>
+        /// </list>
+        /// The helper is body-agnostic — it doesn't take a <see cref="ReferenceBody"/>
+        /// parameter, only the target radius scalar. Callers that need body-specific
+        /// behavior (e.g., infinite-SOI early returns, child SOI enumeration) handle
+        /// that one layer up.
+        ///
+        /// <para>ALGORITHM:</para>
+        /// <list type="number">
+        ///   <item>Compute periapsis and apoapsis distances via
+        ///   <see cref="PeriapsisDistance"/> and <see cref="ApoapsisDistance"/>.</item>
+        ///   <item>Early return null if the orbit is fully inside the target radius
+        ///   (<c>rApo &lt; targetRadius</c>) or fully outside
+        ///   (<c>rPeri &gt; targetRadius</c>). For hyperbolic orbits
+        ///   <c>rApo = +∞</c>, so the fully-inside branch never fires.</item>
+        ///   <item>Boundary-hug guard for elliptical orbits only: if both
+        ///   <c>|rPeri − targetRadius|</c> and <c>|rApo − targetRadius|</c> are within
+        ///   <see cref="BoundaryHugTolerance"/>, return null. Prevents false-positive
+        ///   crossings on orbits that numerically hug the target radius (e.g., a
+        ///   circular orbit at exactly target). Hyperbolic orbits have no finite
+        ///   apoapsis so this check is vacuous and skipped.</item>
+        ///   <item>Conic equation: <c>cos(ν) = (p/r − 1) / e</c> where
+        ///   <c>p = a(1 − e²)</c>. Defensive range check returns null if
+        ///   <c>|cos(ν)| &gt; 1</c> (shouldn't happen given the rPeri/rApo bracket,
+        ///   but guards against numerical noise).</item>
+        ///   <item>Two ν solutions: <c>+acos(cosNu)</c> (outbound radial crossing,
+        ///   between periapsis and apoapsis on increasing-r leg) and
+        ///   <c>-acos(cosNu)</c> (inbound radial crossing, between apoapsis and
+        ///   periapsis on decreasing-r leg, or pre-periapsis for hyperbolic).
+        ///   Convert each to mean anomaly via <see cref="TrueToMeanAnomaly"/>, then
+        ///   to seconds-until-event via mean motion. For elliptical orbits, wrap
+        ///   mean anomaly into <c>[0, 2π)</c> and take the smallest positive delta.
+        ///   For hyperbolic orbits, mean anomaly is monotone and only the candidate
+        ///   with a positive delta-from-current is the future crossing.</item>
+        ///   <item>Convert seconds-until-event to an absolute tick via
+        ///   <c>ceil(seconds / tickIntervalSeconds)</c>. Round-up because warp lands
+        ///   ON event ticks exactly (per netcode contract §4.2); rounding down would
+        ///   miss the event by a tick.</item>
+        /// </list>
+        ///
+        /// <para>OVERFLOW DEFENSE:</para>
+        /// If the predicted absolute tick would exceed <c>long.MaxValue / 2</c>,
+        /// returns null. Near-parabolic orbits with stretched periods hit this; the
+        /// /2 leaves headroom for <c>currentTick + Δticks</c> addition without
+        /// wrapping. Mirrors <see cref="PeriapsisApoapsisPredictor"/>'s defense.
+        ///
+        /// <para>PARAMETER ORDER:</para>
+        /// Matches <see cref="PeriapsisApoapsisPredictor.Predict"/>'s parameter
+        /// convention for the four shared parameters (state, currentTick, mu,
+        /// tickIntervalSeconds). targetRadius is the unique extra parameter and
+        /// sits second after state.
+        ///
+        /// <para>BEHAVIOR PRESERVATION FROM COMMIT 046:</para>
+        /// The math in this helper is the outward closed-form previously inlined in
+        /// <c>SoiCrossingPredictor.TryPredictOutwardCrossing</c>. Extracted at
+        /// commit 047 Stage 1 so atmospheric-entry and surface-impact predictors
+        /// can reuse it. The refactor is bit-exact: same arithmetic in same order,
+        /// same boundary-hug tolerance value, same overflow defense.
+        /// </summary>
+        /// <param name="state">Vessel's current Kepler state (orbital elements + epoch).</param>
+        /// <param name="targetRadius">Threshold radius from body center, in meters.
+        /// Must be finite and positive; callers handle the infinite-threshold case
+        /// (e.g., SOI on top-level body) one layer up.</param>
+        /// <param name="currentTick">Current sim-tick; predictions are returned in
+        /// absolute tick coordinates.</param>
+        /// <param name="mu">Reference body's gravitational parameter μ = G·M in m³/s².</param>
+        /// <param name="tickIntervalSeconds">Seconds per sim-tick (1/30 in Phase 1).</param>
+        /// <returns>Absolute sim-tick of the next radius crossing, or null if no
+        /// crossing is reachable on this orbit (fully inside, fully outside,
+        /// boundary-hug, or overflow).</returns>
+        public static long? SolveConicAtRadius(
+            KeplerState state,
+            double targetRadius,
+            long currentTick,
+            double mu,
+            double tickIntervalSeconds)
+        {
+            if (targetRadius <= 0.0) return null;
+            if (double.IsNaN(targetRadius) || double.IsInfinity(targetRadius)) return null;
+
+            double a = state.SemiMajorAxis;
+            double e = state.Eccentricity;
+
+            double rPeri = PeriapsisDistance(a, e);
+            double rApo = ApoapsisDistance(a, e);
+
+            // Boundary-hug guard for elliptical orbits only. Hyperbolic orbits have
+            // rApo = +infinity so the |rApo - target| < tolerance check is vacuously
+            // false; skip the branch entirely.
+            if (e < 1.0)
+            {
+                if (math.abs(rPeri - targetRadius) < BoundaryHugTolerance &&
+                    math.abs(rApo - targetRadius) < BoundaryHugTolerance)
+                {
+                    return null;
+                }
+            }
+
+            // Early returns: orbit fully inside target → no crossing; orbit fully
+            // outside target → no crossing. For hyperbolic rApo = +infinity the
+            // fully-inside branch is automatically false.
+            if (rApo < targetRadius) return null;
+            if (rPeri > targetRadius) return null;
+
+            // Circular orbits (e ≈ 0): r is constant. If r != target the orbit never
+            // crosses; if r == target the boundary-hug guard above already returned
+            // null. Defensive null avoids divide-by-near-zero in cos(ν).
+            if (math.abs(e) < 1e-12) return null;
+
+            // Conic equation: r(ν) = p / (1 + e·cos(ν))  ⇒  cos(ν) = (p/r − 1) / e.
+            double p = a * (1.0 - e * e);
+            double cosNuCrossing = (p / targetRadius - 1.0) / e;
+
+            // Defensive range check (numerical noise can push cosNu just outside
+            // [-1, 1] even when the rPeri/rApo bracket says a solution exists).
+            if (cosNuCrossing < -1.0 || cosNuCrossing > 1.0) return null;
+
+            double nuCrossing = math.acos(cosNuCrossing);  // in [0, π]
+
+            // Convert both ν candidates (±nuCrossing) to mean anomaly, then compute
+            // smallest positive seconds-until-event from current mean anomaly.
+            double n = MeanMotion(state.SemiMajorAxis, mu);
+            double dtSeconds = (currentTick - state.EpochTick) * tickIntervalSeconds;
+            double meanAnomalyAtEpoch = TrueToMeanAnomaly(state.TrueAnomalyAtEpoch, e);
+            double meanAnomalyNow = meanAnomalyAtEpoch + n * dtSeconds;
+
+            double mCandidatePos = TrueToMeanAnomaly(nuCrossing, e);
+            double mCandidateNeg = TrueToMeanAnomaly(-nuCrossing, e);
+
+            double? secondsToCrossing;
+            if (e < 1.0)
+            {
+                secondsToCrossing = SmallestPositiveDeltaElliptical(
+                    meanAnomalyNow, mCandidatePos, mCandidateNeg, n);
+            }
+            else
+            {
+                secondsToCrossing = SmallestPositiveDeltaHyperbolic(
+                    meanAnomalyNow, mCandidatePos, mCandidateNeg, n);
+            }
+
+            if (!secondsToCrossing.HasValue) return null;
+
+            return SecondsToAbsoluteTick(
+                secondsToCrossing.Value, currentTick, tickIntervalSeconds);
+        }
+
+        /// <summary>
+        /// Smallest positive seconds-until-crossing across two ν candidates,
+        /// accounting for the periodic wrap of elliptical mean anomaly.
+        /// Internal helper for <see cref="SolveConicAtRadius"/>.
+        /// </summary>
+        private static double? SmallestPositiveDeltaElliptical(
+            double meanAnomalyNow, double mPositive, double mNegative, double n)
+        {
+            double twoPi = 2.0 * math.PI_DBL;
+            double mNowWrapped = meanAnomalyNow % twoPi;
+            if (mNowWrapped < 0.0) mNowWrapped += twoPi;
+
+            double mPosWrapped = mPositive % twoPi;
+            if (mPosWrapped < 0.0) mPosWrapped += twoPi;
+            double mNegWrapped = mNegative % twoPi;
+            if (mNegWrapped < 0.0) mNegWrapped += twoPi;
+
+            double deltaPos = mPosWrapped - mNowWrapped;
+            if (deltaPos <= 0.0) deltaPos += twoPi;
+            double deltaNeg = mNegWrapped - mNowWrapped;
+            if (deltaNeg <= 0.0) deltaNeg += twoPi;
+
+            double bestDelta = math.min(deltaPos, deltaNeg);
+            return bestDelta / n;
+        }
+
+        /// <summary>
+        /// Hyperbolic-orbit version: mean anomaly is monotone (no wrap). Each
+        /// candidate corresponds to a single ν on the orbit; the one with positive
+        /// delta from current is the future crossing, the other is in the past.
+        /// Internal helper for <see cref="SolveConicAtRadius"/>.
+        /// </summary>
+        private static double? SmallestPositiveDeltaHyperbolic(
+            double meanAnomalyNow, double mPositive, double mNegative, double n)
+        {
+            double deltaPos = mPositive - meanAnomalyNow;
+            double deltaNeg = mNegative - meanAnomalyNow;
+
+            double? best = null;
+            if (deltaPos > 0.0) best = deltaPos;
+            if (deltaNeg > 0.0)
+            {
+                best = best.HasValue ? math.min(best.Value, deltaNeg) : deltaNeg;
+            }
+            return best.HasValue ? best.Value / n : (double?)null;
+        }
+
+        /// <summary>
+        /// Convert seconds-until-event to an absolute sim-tick. Returns null if the
+        /// result would exceed <c>long.MaxValue / 2</c> (overflow defense matching
+        /// <see cref="PeriapsisApoapsisPredictor"/>'s convention).
+        /// Internal helper for <see cref="SolveConicAtRadius"/>.
+        /// </summary>
+        private static long? SecondsToAbsoluteTick(
+            double secondsUntilEvent, long currentTick, double tickIntervalSeconds)
+        {
+            if (double.IsNaN(secondsUntilEvent) || double.IsInfinity(secondsUntilEvent))
+            {
+                return null;
+            }
+            if (secondsUntilEvent < 0.0) return null;
+
+            double ticksUntilEventD = math.ceil(secondsUntilEvent / tickIntervalSeconds);
+            if (ticksUntilEventD > (double)(long.MaxValue / 2)) return null;
+
+            return currentTick + (long)ticksUntilEventD;
         }
 
         // ----- Private helpers for anomaly conversions -----

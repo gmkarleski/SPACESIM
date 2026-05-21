@@ -80,10 +80,24 @@ namespace SpaceSim.Foundation.Vessels
         public long? NextSoiTransitionTick;
 
         /// <summary>
-        /// Pre-computed sim-tick at which the vessel will need to re-activate to PhysX-active
-        /// mode (e.g., predicted atmospheric entry, scheduled engine burn, scripted mode
-        /// change). Null if no transition is currently predicted.
-        /// PHASE 0 SCOPE: left null.
+        /// Pre-computed sim-tick at which the vessel will need to re-activate to
+        /// PhysX-active mode. Populated by
+        /// <see cref="VesselEventPredictionDriver"/> as the earliest of atmospheric
+        /// entry (via <see cref="AtmosphericEntryPredictor"/>) and surface impact
+        /// (via <see cref="SurfaceImpactPredictor"/>), aggregated via
+        /// <c>MinNullable</c> (commit 047). Predicted at each sim-tick for
+        /// KeplerRails vessels with non-null KeplerState.
+        ///
+        /// Null when neither predictor returns a future tick — typically because the
+        /// body is vacuum (atmospheric-top altitude = 0) AND the orbit doesn't
+        /// intersect the surface, or because the orbit is fully above the
+        /// atmospheric boundary with periapsis above the surface, or because the
+        /// overflow defense kicked in for very-long-period configurations.
+        ///
+        /// Future commits adding scheduled-burn and interstellar-arrival predictors
+        /// will extend the aggregation to N-way (still via min) without schema
+        /// change. See netcode contract §2.3 "Mode-transition aggregation" for the
+        /// full semantics.
         /// </summary>
         public long? NextModeTransitionTick;
     }

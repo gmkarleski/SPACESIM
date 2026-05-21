@@ -727,9 +727,17 @@ namespace SpaceSim.Foundation.Vessels
         /// <para>
         /// <see cref="PhysicsMode.KeplerRails"/> mode evaluates the 5-condition OR
         /// disjunction in declared order (first match wins): proximity, predicted
-        /// atmospheric entry, player focus, scripted thrust, multi-vessel cluster. If
-        /// any fires, suggests <see cref="PhysicsMode.PhysXActive"/> with the matching
-        /// reason.
+        /// mode transition (atmospheric entry / surface impact / future scheduled-burn
+        /// / future interstellar-arrival — aggregated into
+        /// <see cref="KeplerState.NextModeTransitionTick"/> via the event-prediction
+        /// driver), player focus, scripted thrust, multi-vessel cluster. If any
+        /// fires, suggests <see cref="PhysicsMode.PhysXActive"/> with the matching
+        /// reason. As of commit 047, the trigger reason
+        /// <see cref="TransitionTriggerReason.AtmosphericEntryPredicted"/> fires for
+        /// any populated mode-transition tick — atmospheric entry OR surface impact
+        /// — because the underlying field is N-way aggregated; the trigger reason
+        /// label keeps its historical name and rename is deferred to a separate
+        /// cleanup commit.
         /// </para>
         ///
         /// <para>
@@ -740,11 +748,14 @@ namespace SpaceSim.Foundation.Vessels
         /// reference → cannot fire proximity-dependent conditions; safest to stay).
         /// </para>
         ///
-        /// PHASE 0 NOTE: most condition implementations are stubs whose Phase 0
-        /// behavior always passes (no thrust, no atmospheric drag, no contact, no
-        /// focus, no clustering). Only proximity has a real implementation in Phase 0.
-        /// See each <c>Has*</c> / <c>Is*</c> helper for its individual stub
-        /// documentation.
+        /// PHASE 0 / PHASE 1 NOTE: many condition implementations are stubs whose
+        /// behavior always passes (no thrust, no atmospheric drag from PhysX-state,
+        /// no contact, no focus, no clustering). Proximity has a real implementation
+        /// since Phase 0. As of commit 047, mode-transition prediction
+        /// (<c>IsAtmosphericEntryPredicted</c>) also has a real implementation —
+        /// <see cref="KeplerState.NextModeTransitionTick"/> is populated by
+        /// <see cref="VesselEventPredictionDriver"/>. See each <c>Has*</c> /
+        /// <c>Is*</c> helper for its individual stub status.
         /// </summary>
         /// <param name="activeVesselForProximity">
         /// The active vessel whose position serves as the proximity reference point.
@@ -971,13 +982,19 @@ namespace SpaceSim.Foundation.Vessels
         }
 
         /// <summary>
-        /// §3.1 trigger: predicted atmospheric entry within the next sim-tick. Reads
-        /// <see cref="KeplerState.NextModeTransitionTick"/>; if set and within one tick
-        /// of the current sim-tick, atmospheric entry is imminent.
+        /// §3.1 trigger: predicted imminent mode transition within the next sim-tick.
+        /// Reads <see cref="KeplerState.NextModeTransitionTick"/>; if set and within
+        /// one tick of the current sim-tick, a mode transition is imminent.
         ///
-        /// PHASE 0 NOTE: <see cref="KeplerState.NextModeTransitionTick"/> is always
-        /// null in Phase 0 — event prediction is Phase 1+ work. This method
-        /// returns false unconditionally until that prediction system lands.
+        /// As of commit 047, <see cref="KeplerState.NextModeTransitionTick"/> is
+        /// populated by <see cref="VesselEventPredictionDriver"/> as the earliest of
+        /// atmospheric-entry and surface-impact predictions. This method name
+        /// retains the "AtmosphericEntry" framing for historical / API-stability
+        /// reasons, but the underlying predicate fires for any populated
+        /// mode-transition tick — including surface impact on a vacuum body. The
+        /// label imprecision (and the matching
+        /// <see cref="TransitionTriggerReason.AtmosphericEntryPredicted"/> enum
+        /// value) is a known cosmetic concern deferred to a separate cleanup commit.
         /// </summary>
         private bool IsAtmosphericEntryPredicted()
         {

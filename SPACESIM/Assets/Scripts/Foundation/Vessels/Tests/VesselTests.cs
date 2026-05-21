@@ -63,6 +63,24 @@ namespace SpaceSim.Foundation.Vessels.Tests
             _bodyGo = new GameObject("TestReferenceBody");
             _body = _bodyGo.AddComponent<ReferenceBody>();
 
+            // Default test body is a POINT MASS for tests that don't care about surface
+            // or atmosphere. Reflection-set surfaceRadiusMeters = 1.0 so the
+            // SurfaceImpactPredictor (commit 047) doesn't fire on standard test orbits
+            // (LEO scale 7e6 m never reaches a 1 m surface). Tests that exercise
+            // surface-impact or atmospheric-entry behavior must reflection-set finite
+            // surfaceRadiusMeters / atmosphericTopAltitudeMeters values themselves
+            // (see SurfaceImpactPredictorTests / AtmosphericEntryPredictorTests for
+            // the pattern, and the SetEarthFiniteSoiAndInitialize helper later in
+            // this file). atmosphericTopAltitudeMeters stays at the field default 0.0
+            // (vacuum body) which the AtmosphericEntryPredictor already handles
+            // correctly (returns null).
+            {
+                var surfaceField = typeof(ReferenceBody).GetField(
+                    "surfaceRadiusMeters",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                surfaceField.SetValue(_body, 1.0);
+            }
+
             // Vessel GameObject (no components yet beyond the Vessel itself).
             _vesselGo = new GameObject("TestVessel");
             _vessel = _vesselGo.AddComponent<Vessel>();
@@ -2387,6 +2405,221 @@ namespace SpaceSim.Foundation.Vessels.Tests
             // should equal 1 (one vessel examined, PredictAndUpdate completed).
             Assert.AreEqual(1, VesselEventPredictionDriver.EvaluationCount);
             Assert.AreEqual(1, VesselEventPredictionDriver.PredictionUpdateCount);
+        }
+
+        // ----- VesselEventPredictionDriver + AtmosphericEntry + SurfaceImpact (commit 047 Stage 2) -----
+
+        // Earth-scale surface + atmosphere values for the new tests. These override
+        // the SetUp's point-mass default (surfaceRadiusMeters = 1.0) via reflection.
+        private const double TestEarthSurfaceRadiusMeters = 6.371e6;
+        private const double TestEarthAtmosphericTopMeters = 1.0e5;  // 100 km
+
+        /// <summary>
+        /// Reflection helper: assign Earth-like surfaceRadiusMeters and
+        /// atmosphericTopAltitudeMeters to <see cref="_body"/>, then invoke
+        /// InitializeBodyForTesting. Used by Stage 2 atmospheric/surface tests
+        /// that need a body with a real surface and atmosphere.
+        /// </summary>
+        private void SetEarthSurfaceAtmosphereAndInitialize(
+            double surfaceRadius, double atmosphericTop)
+        {
+            var surfaceField = typeof(ReferenceBody).GetField(
+                "surfaceRadiusMeters",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            surfaceField.SetValue(_body, surfaceRadius);
+
+            var atmField = typeof(ReferenceBody).GetField(
+                "atmosphericTopAltitudeMeters",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            atmField.SetValue(_body, atmosphericTop);
+
+            _body.InitializeBodyForTesting();
+        }
+
+        /// <summary>
+        /// Build a KeplerState whose orbit reaches into the atmosphere (periapsis
+        /// below atmospheric top, apoapsis well above). Vessel starts at apoapsis
+        /// so the predicted entry is in the future. e &lt; 0.8 by construction.
+        /// </summary>
+        private KeplerState NewAtmosphericCrossingState()
+        {
+            // rPeri inside atmosphere (above surface but below atmospheric top):
+            // 50 km above surface, atmospheric top at 100 km, so peri is 50 km
+            // inside atmosphere.
+            double rPeri = TestEarthSurfaceRadiusMeters + 5.0e4;
+            double rApo = 1.0e7;  // 10,000 km from body center — well above atmosphere
+            double a = 0.5 * (rPeri + rApo);
+            double e = (rApo - rPeri) / (rApo + rPeri);
+            // Sanity: e should be ~0.22, well under 0.8.
+            return new KeplerState
+            {
+                SemiMajorAxis = a,
+                Eccentricity = e,
+                Inclination = 0.0,
+                LongitudeOfAscendingNode = 0.0,
+                ArgumentOfPeriapsis = 0.0,
+                TrueAnomalyAtEpoch = math.PI_DBL,  // start at apoapsis, descending
+                EpochTick = 0,
+                ReferenceBodyId = _body != null ? _body.BodyId : Guid.Empty,
+            };
+        }
+
+        /// <summary>
+        /// Build a KeplerState whose orbit impacts the surface (periapsis below
+        /// surface). Vessel starts at apoapsis. e &lt; 0.8 by construction.
+        /// </summary>
+        private KeplerState NewSurfaceImpactState()
+        {
+            double rPeri = TestEarthSurfaceRadiusMeters - 1.0e5;  // 100 km below surface
+            double rApo = 1.0e7;
+            double a = 0.5 * (rPeri + rApo);
+            double e = (rApo - rPeri) / (rApo + rPeri);
+            return new KeplerState
+            {
+                SemiMajorAxis = a,
+                Eccentricity = e,
+                Inclination = 0.0,
+                LongitudeOfAscendingNode = 0.0,
+                ArgumentOfPeriapsis = 0.0,
+                TrueAnomalyAtEpoch = math.PI_DBL,  // start at apoapsis, descending
+                EpochTick = 0,
+                ReferenceBodyId = _body != null ? _body.BodyId : Guid.Empty,
+            };
+        }
+
+        [Test]
+        public void EventPredictionDriver_OnTickAdvanced_PopulatesNextModeTransitionTickFromAtmosphericEntry()
+        {
+            // Body with atmosphere but no orbit-impacts-surface. Vessel orbit reaches
+            // into atmosphere; predicted entry tick populates NextModeTransitionTick.
+            // (Surface impact predictor returns null here because rPeri > surface.)
+            SetUpEventPredictionDriver();
+            SetEarthSurfaceAtmosphereAndInitialize(
+                TestEarthSurfaceRadiusMeters, TestEarthAtmosphericTopMeters);
+
+            var kepler = NewAtmosphericCrossingState();
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+
+            Assert.IsNull(_vessel.State.KeplerState.NextModeTransitionTick,
+                "Sanity: NextModeTransitionTick should be null before driver fires");
+
+            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
+
+            Assert.IsNotNull(_vessel.State.KeplerState.NextModeTransitionTick,
+                "NextModeTransitionTick should be populated when orbit reaches atmosphere");
+            Assert.Greater(_vessel.State.KeplerState.NextModeTransitionTick.Value, 0,
+                "Predicted mode-transition tick should be in the future");
+        }
+
+        [Test]
+        public void EventPredictionDriver_OnTickAdvanced_PopulatesNextModeTransitionTickFromSurfaceImpact()
+        {
+            // Body with NO atmosphere (vacuum) but vessel orbit impacts surface.
+            // SurfaceImpactPredictor populates NextModeTransitionTick;
+            // AtmosphericEntryPredictor returns null (vacuum body).
+            SetUpEventPredictionDriver();
+            SetEarthSurfaceAtmosphereAndInitialize(
+                TestEarthSurfaceRadiusMeters, atmosphericTop: 0.0);  // vacuum
+
+            var kepler = NewSurfaceImpactState();
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+
+            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
+
+            Assert.IsNotNull(_vessel.State.KeplerState.NextModeTransitionTick,
+                "NextModeTransitionTick should be populated when orbit impacts surface");
+            Assert.Greater(_vessel.State.KeplerState.NextModeTransitionTick.Value, 0,
+                "Predicted mode-transition tick should be in the future");
+        }
+
+        [Test]
+        public void EventPredictionDriver_OnTickAdvanced_EarliestOfAtmosphericAndSurface_WinsInModeTransitionTick()
+        {
+            // Body has both atmosphere AND vessel orbit impacts surface. Vessel
+            // hits atmospheric boundary (threshold = SurfaceRadiusMeters + AtmoTop =
+            // 6.471e6) BEFORE surface (threshold = SurfaceRadiusMeters = 6.371e6),
+            // so atmospheric entry tick should be earlier than surface impact tick.
+            // NextModeTransitionTick = min(atmospheric, surface) = atmospheric tick.
+            SetUpEventPredictionDriver();
+            SetEarthSurfaceAtmosphereAndInitialize(
+                TestEarthSurfaceRadiusMeters, TestEarthAtmosphericTopMeters);
+
+            // Orbit with periapsis BELOW surface (impacts) — also passes through
+            // atmosphere on the way down.
+            var kepler = NewSurfaceImpactState();
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+
+            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
+
+            // Verify NextModeTransitionTick is populated.
+            long? modeTick = _vessel.State.KeplerState.NextModeTransitionTick;
+            Assert.IsNotNull(modeTick,
+                "NextModeTransitionTick should be populated when both atmosphere and surface are reached");
+
+            // Compute atmospheric and surface predicted ticks independently for comparison.
+            long? atmoTick = AtmosphericEntryPredictor.PredictNextEntry(
+                kepler, _body, currentTick: 1, SimTickController.SimTickIntervalSeconds);
+            long? surfaceTick = SurfaceImpactPredictor.PredictNextImpact(
+                kepler, _body, currentTick: 1, SimTickController.SimTickIntervalSeconds);
+
+            Assert.IsTrue(atmoTick.HasValue, "Atmospheric entry should be predicted");
+            Assert.IsTrue(surfaceTick.HasValue, "Surface impact should be predicted");
+            Assert.Less(atmoTick.Value, surfaceTick.Value,
+                "Atmospheric entry (higher threshold radius) should fire before surface impact (lower)");
+
+            // The aggregated tick should equal the earlier of the two (the atmospheric tick).
+            Assert.AreEqual(atmoTick.Value, modeTick.Value,
+                "NextModeTransitionTick should equal min(atmosphericEntryTick, surfaceImpactTick)");
+        }
+
+        [Test]
+        public void EventPredictionDriver_OnTickAdvanced_UpdatesQueueWithAtmosphericEntryAndSurfaceImpact()
+        {
+            // Both atmosphere + surface-impact predictors populate their respective
+            // queue entries. With orbit crossing both thresholds: queue has
+            // Periapsis + Apoapsis + AtmosphericEntry + SurfaceImpact = 4 entries.
+            // (No SoiCrossing — default _body has infinite SOI; predictor returns null.)
+            var controller = SetUpEventPredictionDriver();
+            SetEarthSurfaceAtmosphereAndInitialize(
+                TestEarthSurfaceRadiusMeters, TestEarthAtmosphericTopMeters);
+
+            var kepler = NewSurfaceImpactState();
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+
+            Assert.AreEqual(0, controller.EventQueue.Count,
+                "Sanity: queue empty before driver fires");
+
+            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
+
+            Assert.AreEqual(4, controller.EventQueue.Count,
+                "Queue should have Periapsis + Apoapsis + AtmosphericEntry + SurfaceImpact entries");
+        }
+
+        [Test]
+        public void EventPredictionDriver_OnTickAdvanced_NoAtmosphereOrImpactExpected_NextModeTransitionTickNull()
+        {
+            // High-altitude circular orbit (e=0.05, rPeri ≈ 6.65e6 above Earth-default
+            // surface 6.371e6) around vacuum body. Neither atmospheric entry nor
+            // surface impact applies. NextModeTransitionTick stays null; queue gets
+            // only Periapsis + Apoapsis.
+            var controller = SetUpEventPredictionDriver();
+            SetEarthSurfaceAtmosphereAndInitialize(
+                TestEarthSurfaceRadiusMeters, atmosphericTop: 0.0);  // vacuum
+
+            var kepler = NewKeplerState();
+            kepler.Eccentricity = 0.05;  // rPeri = 7e6 * 0.95 = 6.65e6 > 6.371e6 surface
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+
+            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
+
+            Assert.IsNull(_vessel.State.KeplerState.NextModeTransitionTick,
+                "NextModeTransitionTick should be null when neither atmosphere nor surface is reached");
+
+            // Queue has only Periapsis + Apoapsis (no SoiCrossing because Earth has
+            // infinite SOI by default in this test, no AtmosphericEntry vacuum body,
+            // no SurfaceImpact orbit-above-surface).
+            Assert.AreEqual(2, controller.EventQueue.Count,
+                "Queue should contain only Periapsis + Apoapsis entries");
         }
     }
 }
