@@ -861,6 +861,10 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: SpaceSim.Foundation.Vessels::SpaceSim.Foundation.Vessels.ReferenceBody
   massKg: 5.972e+24
+  soiRadiusMeters: Infinity
+  surfaceRadiusMeters: 6371000
+  atmosphericTopAltitudeMeters: 0
+  parentBody: {fileID: 0}
 --- !u!4 &1754603223
 Transform:
   m_ObjectHideFlags: 0

@@ -17,6 +17,7 @@
 **/UserSettings/
 **/MemoryCaptures/
 **/obj/
+**/_Recovery/
 
 # Unity build outputs
 **/Build/
