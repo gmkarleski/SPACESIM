@@ -224,6 +224,56 @@ namespace SpaceSim.Foundation.Vessels
         /// any previously-assigned Guid); idempotent on registry (RegisterBodySafe
         /// dedups).
         /// </summary>
+        /// <summary>
+        /// TEST-ONLY initialization overload that sets the body's serialized fields
+        /// before running the standard Awake-equivalent logic. Production callers
+        /// configure these via the Unity Inspector; this overload provides a test
+        /// seam so EditMode tests can populate fields without reflection-based
+        /// private mutation.
+        ///
+        /// <para>NULLABLE OPTIONAL PARAMETERS:</para>
+        /// <paramref name="surfaceRadiusMeters"/> and
+        /// <paramref name="atmosphericTopAltitudeMeters"/> are nullable so callers
+        /// that don't care about surface/atmosphere semantics (most tests, which
+        /// only need a body with mass and SOI for orbital math) can omit them and
+        /// pick up the SerializeField defaults (6.371e6 surface, 0 atmosphere).
+        /// Passing null = use field default; passing a value = override.
+        ///
+        /// <para>EXISTING TESTS:</para>
+        /// Pre-existing tests using reflection-based field-mutation patterns are
+        /// not migrated to this overload as part of the commit that introduced it
+        /// — they migrate organically as tests get touched. The reflection pattern
+        /// stays valid; this overload is an additional option, not a replacement.
+        /// </summary>
+        /// <param name="massKg">Body mass in kilograms.</param>
+        /// <param name="soiRadiusMeters">SOI radius in meters
+        /// (<see cref="double.PositiveInfinity"/> for top-level bodies).</param>
+        /// <param name="parentBody">Parent body reference; null for top-level bodies.</param>
+        /// <param name="surfaceRadiusMeters">Surface radius in meters. Null = use
+        /// SerializeField default (6.371e6, Earth-like).</param>
+        /// <param name="atmosphericTopAltitudeMeters">Atmosphere top altitude above
+        /// surface in meters. Null = use SerializeField default (0.0, vacuum body).</param>
+        public void InitializeBodyForTesting(
+            double massKg,
+            double soiRadiusMeters,
+            ReferenceBody parentBody = null,
+            double? surfaceRadiusMeters = null,
+            double? atmosphericTopAltitudeMeters = null)
+        {
+            this.massKg = massKg;
+            this.soiRadiusMeters = soiRadiusMeters;
+            this.parentBody = parentBody;
+            if (surfaceRadiusMeters.HasValue)
+            {
+                this.surfaceRadiusMeters = surfaceRadiusMeters.Value;
+            }
+            if (atmosphericTopAltitudeMeters.HasValue)
+            {
+                this.atmosphericTopAltitudeMeters = atmosphericTopAltitudeMeters.Value;
+            }
+            InitializeBodyForTesting();
+        }
+
         public void InitializeBodyForTesting()
         {
             if (BodyId == Guid.Empty)

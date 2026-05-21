@@ -19,28 +19,31 @@ The Unity project is organized into modules under `SPACESIM/Assets/Scripts/Found
 | Module | Status | Purpose | Asmdef |
 |---|---|---|---|
 | Coordinates | Complete (commit 029) | Double-precision world coordinates, floating origin, shift dispatch | `SpaceSim.Foundation.Coordinates` |
-| SimTick | Complete (commit 033) | 30 Hz sim-tick controller, 10-step cycle, warp controller | `SpaceSim.Foundation.SimTick` |
+| SimTick | Complete (commit 033); event priority queue added (commit 045) | 30 Hz sim-tick controller, 10-step cycle, warp controller, event priority queue | `SpaceSim.Foundation.SimTick` |
+| Vessels | In progress (commits 038-047) | Vessel containers + ReferenceBody hierarchy + Kepler propagator + mode transitions + SOI re-rooting + five predictors (periapsis/apoapsis, SOI crossing, atmospheric entry, surface impact) | `SpaceSim.Foundation.Vessels` |
 
 ### 1.2 Planned modules
 
-Per the netcode contract and CONSTRAINTS §9 build order, the foundation modules expected during Phase 1:
+Per the netcode contract and CONSTRAINTS §9 build order, the remaining foundation modules expected during Phase 1+:
 
-- `Physics` — three-mode physics architecture (PhysX-active / Kepler-rails / interstellar-cruise), mode transition protocols
-- `Vessels` — vessel container data structure per netcode contract §2
-- `Time` — time-warp controller integration, event-prediction queue
 - `Save` — save/load format implementing the authoritative state schema
 
-Folders for `Physics/` already exist with `.gitkeep` placeholders; `SimTick/` is implemented (commit 033); the rest land when implementation begins.
+The original "Planned modules" list also included separate `Physics` and `Time` modules. Both have been absorbed into existing modules rather than landing as standalone folders:
+
+- **Three-mode physics architecture** (PhysX-active / Kepler-rails / interstellar-cruise) lives in `Vessels/` (the vessel container holds the mode state and `KeplerState`; mode transition triggers and procedures are vessel methods) and `SimTick/` (the warp controller respects mode-specific warp ceilings). No standalone `Physics/` module exists. An earlier `Physics/` folder placeholder with only `.gitkeep` was removed in the cleanup commit following commit 047.
+- **Time-warp controller integration** lives in `SimTick/` (`SimTickWarpController`, `EventPriorityQueue`). Event-prediction queue is owned by `SimTickController` per CONSTRAINTS §2 ("Authority over the queue lives in the sim-tick controller"). No standalone `Time/` module exists.
 
 ### 1.3 Module dependency direction
 
 Dependencies flow strictly downward through the foundation:
 
 ```
-Vessels → Physics → SimTick → Coordinates
-                                  ↑
-              (Save) refers to all module states for serialization
+Vessels → SimTick → Coordinates
+                        ↑
+   (Save) refers to all module states for serialization
 ```
+
+The `IActiveVessel` interface (in `SimTick`) breaks what would otherwise be a Vessels↔SimTick cycle: SimTick code that needs to query vessel state takes `IActiveVessel`, and `Vessel` implements it. Drivers in Vessels (`VesselTransitionDriver`, `VesselSoiRerootingDriver`, `VesselEventPredictionDriver`) subscribe to `SimTickController.TickAdvanced` from outside the controller, preserving the asmdef direction.
 
 Lower modules never reference higher modules. Tests that need to cross module boundaries (e.g., SimTick tests verifying integration with Coordinates) live in the higher module's Tests folder and reference both.
 

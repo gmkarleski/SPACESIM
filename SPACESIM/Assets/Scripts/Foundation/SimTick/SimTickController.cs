@@ -367,40 +367,75 @@ namespace SpaceSim.Foundation.SimTick
 
         /// <summary>
         /// Step 1: receive peer state.
-        /// STUB (commit 033). Single-player no-op. Fleshed out when multiplayer lands (post-v1).
+        /// STUB (commit 033). Single-player no-op. Peer state ingestion lands with
+        /// the post-v1 multiplayer work.
         /// </summary>
-        private void Step1_ReceivePeerState() { /* TODO: peer state ingestion (post-v1 multiplayer) */ }
+        private void Step1_ReceivePeerState() { /* Single-player no-op; peer state ingestion is post-v1 multiplayer. */ }
 
         /// <summary>
         /// Step 2: read PhysX state for vessels with local PhysX-active authority.
-        /// STUB (commit 033). Fleshed out when vessel containers exist (commit 035+).
+        /// STUB (commit 033). Vessel containers landed at commit 038; per-vessel
+        /// rigidbody-state read into authoritative state remains future work and
+        /// will land alongside Step 5 reconciliation.
         /// </summary>
-        private void Step2_ReadPhysX() { /* TODO: per-vessel PhysX rigidbody state read (commit 035+) */ }
+        private void Step2_ReadPhysX() { /* Per-vessel PhysX rigidbody state read into authoritative state — pairs with Step 5 reconciliation. */ }
 
         /// <summary>
         /// Step 3: convert PhysX local coords to authoritative double-precision world coords.
-        /// STUB (commit 033). Uses <see cref="CoordinateMath.LocalToWorld"/> per-vessel once
-        /// vessel containers exist (commit 035+).
+        /// STUB (commit 033). The per-vessel conversion via
+        /// <see cref="FloatingOriginManager.LocalToWorld"/> lands alongside Step 2
+        /// (PhysX read) and Step 5 (reconcile) — the three steps together form the
+        /// PhysX-read pipeline that's still future work.
         /// </summary>
-        private void Step3_ConvertToAuthoritative() { /* TODO: per-vessel local-to-world conversion (commit 035+) */ }
+        private void Step3_ConvertToAuthoritative() { /* Per-vessel local-to-world conversion of PhysX-read state — pairs with Step 2 and Step 5. */ }
 
         /// <summary>
         /// Step 4: apply analytic updates (Kepler-rails propagation, interstellar-cruise
         /// with relativistic time-dilation, fuel/life-support consumption).
-        /// STUB (commit 033). As of commit 040, the Kepler-rails propagator
-        /// (<see cref="SpaceSim.Foundation.Vessels.KeplerPropagator"/>) is wired in but
-        /// invoked on-demand by <c>Vessel.GetWorldPosition</c> and
-        /// <c>Vessel.TransitionToPhysXActive</c>, not from step 4. Step 4 gains work
-        /// when the event queue and multi-vessel state-update needs land (future commit).
+        ///
+        /// <strong>DELIBERATELY EMPTY post commits 038-047.</strong> Analytic
+        /// work that originally would have lived in Step 4 has been distributed
+        /// across two architectural patterns instead:
+        /// <list type="bullet">
+        ///   <item><strong>On-demand propagation:</strong> per-vessel Kepler-rails
+        ///   position queries via <see cref="SpaceSim.Foundation.Vessels.KeplerPropagator"/>
+        ///   are invoked from <c>Vessel.GetWorldPosition</c> and
+        ///   <c>Vessel.TransitionToPhysXActive</c> as needed — not driven from
+        ///   inside the 10-step cycle.</item>
+        ///   <item><strong>TickAdvanced subscribers (driver pattern):</strong>
+        ///   per-tick analytic work that DOES need to run every sim-tick lives in
+        ///   driver classes that subscribe to <see cref="TickAdvanced"/> from
+        ///   outside the controller. Three drivers currently subscribe:
+        ///   <c>VesselTransitionDriver</c> (commit 043, disabled-by-default mode
+        ///   transition trigger evaluation), <c>VesselSoiRerootingDriver</c>
+        ///   (commit 044, SOI boundary detection), and
+        ///   <c>VesselEventPredictionDriver</c> (commit 045, per-vessel predictor
+        ///   execution — periapsis/apoapsis + SOI crossing + atmospheric entry +
+        ///   surface impact).</item>
+        /// </list>
+        ///
+        /// The driver-on-TickAdvanced pattern preserves the Vessels → SimTick
+        /// asmdef direction (drivers live in Vessels and subscribe outward) and
+        /// keeps the cycle body trivial. The 10-step cycle remains a useful
+        /// scaffolding of "where in the FixedUpdate sequence work happens," but
+        /// the analytic-propagation work itself is event-driven, not cycle-driven.
+        /// Step 4 stays empty as a deliberate architectural choice.
+        ///
+        /// Interstellar-cruise relativistic time-dilation and fuel/life-support
+        /// consumption are still future work; both will likely follow the
+        /// TickAdvanced-subscriber pattern when they land.
         /// </summary>
-        private void Step4_ApplyAnalyticUpdates() { /* TODO: analytic propagation driver — event queue + multi-vessel updates (future commit). Per-vessel Kepler-rails position queries already work via on-demand propagator. */ }
+        private void Step4_ApplyAnalyticUpdates() { /* Deliberately empty; analytic work runs via TickAdvanced subscribers (see XML doc). */ }
 
         /// <summary>
-        /// Step 5: reconcile PhysX-derived updates and analytic updates into the new
-        /// authoritative state.
-        /// STUB (commit 033). Fleshed out alongside step 2 and step 4 (commit 036+).
+        /// Step 5: reconcile PhysX-derived updates (Step 2) and analytic updates
+        /// (Step 4 / driver subscribers) into the new authoritative state.
+        ///
+        /// STUB (commit 033). Reconciliation logic is still future work; it lands
+        /// alongside Step 2's PhysX-read pipeline. The two steps are jointly
+        /// gated — Step 5 has nothing to reconcile while Step 2 is empty.
         /// </summary>
-        private void Step5_ReconcileAuthoritative() { /* TODO: reconciliation logic (commit 036+) */ }
+        private void Step5_ReconcileAuthoritative() { /* Reconciliation logic — pairs with Step 2 PhysX read. */ }
 
         /// <summary>
         /// Step 6: detect mode transitions for each vessel. In commit 038, two
@@ -461,22 +496,29 @@ namespace SpaceSim.Foundation.SimTick
 
         /// <summary>
         /// Step 7: push authoritative state back to PhysX rigidbodies.
-        /// STUB (commit 033). Per-vessel write once vessel containers exist (commit 035+).
+        /// STUB (commit 033). Vessel containers landed at commit 038; per-vessel
+        /// authoritative-to-PhysX write remains future work and lands alongside
+        /// Step 2's PhysX-read pipeline and Step 5's reconciliation.
         /// </summary>
-        private void Step7_PushAuthoritativeToPhysX() { /* TODO: per-vessel authoritative-to-PhysX write (commit 035+) */ }
+        private void Step7_PushAuthoritativeToPhysX() { /* Per-vessel authoritative-to-PhysX write — pairs with Step 2 and Step 5. */ }
 
         /// <summary>
         /// Step 8: replicate authoritative state deltas to peers.
-        /// STUB (commit 033). Single-player no-op. Fleshed out when multiplayer lands (post-v1).
+        /// STUB (commit 033). Single-player no-op. Replication delta send lands
+        /// with the post-v1 multiplayer work.
         /// </summary>
-        private void Step8_ReplicateToPeers() { /* TODO: replication delta send (post-v1 multiplayer) */ }
+        private void Step8_ReplicateToPeers() { /* Single-player no-op; replication delta send is post-v1 multiplayer. */ }
 
         /// <summary>
         /// Step 9: fire analytic events whose scheduled tick has been reached.
-        /// STUB (commit 033). Empty event queue; no-op. Fleshed out when the analytic event
-        /// queue lands (commit 036+ with Kepler-rails).
+        /// STUB (commit 033). The event-prediction priority queue landed at commit
+        /// 045 (<see cref="EventQueue"/>) and is populated each tick by the
+        /// per-tick predictor drivers. Event FIRING — peek the queue's top entry,
+        /// dispatch handlers for events whose tick &lt;= TickNumber, halt warp on
+        /// halt-on-event-type settings per CONSTRAINTS §2 — is the remaining work
+        /// and lands alongside commit 048's time-warp UI.
         /// </summary>
-        private void Step9_FireEvents() { /* TODO: event-queue processing (commit 036+) */ }
+        private void Step9_FireEvents() { /* Event-queue dispatch — queue landed in commit 045; firing/halt-on-event lands with the warp UI. */ }
 
         /// <summary>
         /// Step 10: advance the sim-tick counter and notify listeners.
