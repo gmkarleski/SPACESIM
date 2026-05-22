@@ -55,32 +55,36 @@ namespace SpaceSim.Foundation.Vessels.Tests
         // ----- Helpers -----
 
         /// <summary>
-        /// Reflection-set the body's surfaceRadiusMeters and atmosphericTopAltitudeMeters
-        /// to Earth-like values, then call InitializeBodyForTesting. Atmosphere present.
+        /// Configure the body with Earth-like surface radius and a non-zero atmospheric
+        /// top altitude (atmosphere present). Named wrapper preserved as semantic
+        /// anchor: the test reads as "this test wants Earth with atmosphere" rather
+        /// than as a generic init call.
         /// </summary>
         private void SetEarthAtmosphereAndInitialize()
         {
-            SetField("surfaceRadiusMeters", EarthSurfaceRadiusMeters);
-            SetField("atmosphericTopAltitudeMeters", EarthAtmosphericTopAltitudeMeters);
-            _body.InitializeBodyForTesting();
+            _body.InitializeBodyForTesting(
+                massKg: EarthMassKg,
+                soiRadiusMeters: double.PositiveInfinity,
+                surfaceRadiusMeters: EarthSurfaceRadiusMeters,
+                atmosphericTopAltitudeMeters: EarthAtmosphericTopAltitudeMeters);
         }
 
         /// <summary>
-        /// Reflection-set surface only; atmosphere = 0 (vacuum body).
+        /// Configure the body as a vacuum body (atmospheric top altitude = 0). Named
+        /// wrapper preserved as semantic anchor.
         /// </summary>
         private void SetVacuumAndInitialize()
         {
-            SetField("surfaceRadiusMeters", EarthSurfaceRadiusMeters);
-            SetField("atmosphericTopAltitudeMeters", 0.0);
-            _body.InitializeBodyForTesting();
+            _body.InitializeBodyForTesting(
+                massKg: EarthMassKg,
+                soiRadiusMeters: double.PositiveInfinity,
+                surfaceRadiusMeters: EarthSurfaceRadiusMeters,
+                atmosphericTopAltitudeMeters: 0.0);
         }
 
-        private void SetField(string fieldName, double value)
-        {
-            var f = typeof(ReferenceBody).GetField(
-                fieldName, BindingFlags.NonPublic | BindingFlags.Instance);
-            f.SetValue(_body, value);
-        }
+        // SetField generic reflection helper removed in the reflection-migration sweep.
+        // Both callers (SetEarthAtmosphereAndInitialize, SetVacuumAndInitialize) now
+        // invoke the parameterized InitializeBodyForTesting overload directly.
 
         // BuildState helper consolidated into PredictorTestState (imported via
         // `using static` at top of file). Call sites use the unqualified

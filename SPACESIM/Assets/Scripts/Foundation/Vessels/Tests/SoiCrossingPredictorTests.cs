@@ -56,11 +56,11 @@ namespace SpaceSim.Foundation.Vessels.Tests
 
             _earthGo = new GameObject("Earth");
             _earth = _earthGo.AddComponent<ReferenceBody>();
-            SetBodyMass(_earth, EarthMassKg);
-            SetBodySoiRadius(_earth, EarthSoiRadiusMeters);
             // No parent — Earth is the local top-level body for these tests, but with
             // finite SOI so outward crossings can be tested.
-            _earth.InitializeBodyForTesting();
+            _earth.InitializeBodyForTesting(
+                massKg: EarthMassKg,
+                soiRadiusMeters: EarthSoiRadiusMeters);
         }
 
         [TearDown]
@@ -72,26 +72,11 @@ namespace SpaceSim.Foundation.Vessels.Tests
 
         // ----- Helpers -----
 
-        private static void SetBodyMass(ReferenceBody body, double massKg)
-        {
-            var f = typeof(ReferenceBody).GetField(
-                "massKg", BindingFlags.NonPublic | BindingFlags.Instance);
-            f.SetValue(body, massKg);
-        }
-
-        private static void SetBodySoiRadius(ReferenceBody body, double soi)
-        {
-            var f = typeof(ReferenceBody).GetField(
-                "soiRadiusMeters", BindingFlags.NonPublic | BindingFlags.Instance);
-            f.SetValue(body, soi);
-        }
-
-        private static void SetBodyParent(ReferenceBody body, ReferenceBody parent)
-        {
-            var f = typeof(ReferenceBody).GetField(
-                "parentBody", BindingFlags.NonPublic | BindingFlags.Instance);
-            f.SetValue(body, parent);
-        }
+        // SetBodyMass / SetBodySoiRadius / SetBodyParent helpers removed in the
+        // reflection-migration sweep. All four prior call clusters (SetUp,
+        // BuildChildBody, two inline test sites) now invoke the parameterized
+        // InitializeBodyForTesting(massKg, soiRadiusMeters, parentBody, ...)
+        // overload directly.
 
         /// <summary>
         /// Create a child body of <see cref="_earth"/> at the given world offset, with
@@ -107,10 +92,10 @@ namespace SpaceSim.Foundation.Vessels.Tests
                 (float)worldOffsetMeters.y,
                 (float)worldOffsetMeters.z);
             var body = go.AddComponent<ReferenceBody>();
-            SetBodyMass(body, massKg);
-            SetBodySoiRadius(body, soiRadius);
-            SetBodyParent(body, _earth);
-            body.InitializeBodyForTesting();
+            body.InitializeBodyForTesting(
+                massKg: massKg,
+                soiRadiusMeters: soiRadius,
+                parentBody: _earth);
             return body;
         }
 
@@ -590,9 +575,9 @@ namespace SpaceSim.Foundation.Vessels.Tests
             // "FarBody" with tiny mass and small finite SOI but very high a.
             var farBodyGo = new GameObject("FarBody");
             var farBody = farBodyGo.AddComponent<ReferenceBody>();
-            SetBodyMass(farBody, 1.0);  // 1 kg — μ ~ 6.67e-11
-            SetBodySoiRadius(farBody, 1.0e12);  // 1 trillion meters — vast SOI
-            farBody.InitializeBodyForTesting();
+            farBody.InitializeBodyForTesting(
+                massKg: 1.0,            // 1 kg — μ ~ 6.67e-11
+                soiRadiusMeters: 1.0e12);  // 1 trillion meters — vast SOI
             try
             {
                 // Hyperbolic at huge scale. Periapsis at 1e11 m (10× Earth-Sun distance).
@@ -634,9 +619,9 @@ namespace SpaceSim.Foundation.Vessels.Tests
             // clamp logic without crashing.
             var smallBodyGo = new GameObject("SmallBody");
             var smallBody = smallBodyGo.AddComponent<ReferenceBody>();
-            SetBodyMass(smallBody, 1.0);             // 1 kg — μ ~ 6.67e-11
-            SetBodySoiRadius(smallBody, 1.0e12);     // 1 trillion meters
-            smallBody.InitializeBodyForTesting();
+            smallBody.InitializeBodyForTesting(
+                massKg: 1.0,                // 1 kg — μ ~ 6.67e-11
+                soiRadiusMeters: 1.0e12);   // 1 trillion meters
             try
             {
                 double rPeri = 2.0e8;

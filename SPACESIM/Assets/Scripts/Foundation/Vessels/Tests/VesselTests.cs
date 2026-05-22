@@ -66,14 +66,22 @@ namespace SpaceSim.Foundation.Vessels.Tests
             // Default test body is a POINT MASS for tests that don't care about surface
             // or atmosphere. Reflection-set surfaceRadiusMeters = 1.0 so the
             // SurfaceImpactPredictor (commit 047) doesn't fire on standard test orbits
-            // (LEO scale 7e6 m never reaches a 1 m surface). Tests that exercise
-            // surface-impact or atmospheric-entry behavior must reflection-set finite
-            // surfaceRadiusMeters / atmosphericTopAltitudeMeters values themselves
-            // (see SurfaceImpactPredictorTests / AtmosphericEntryPredictorTests for
-            // the pattern, and the SetEarthFiniteSoiAndInitialize helper later in
-            // this file). atmosphericTopAltitudeMeters stays at the field default 0.0
-            // (vacuum body) which the AtmosphericEntryPredictor already handles
-            // correctly (returns null).
+            // (LEO scale 7e6 m never reaches a 1 m surface). atmosphericTopAltitudeMeters
+            // stays at the field default 0.0 (vacuum body) which the
+            // AtmosphericEntryPredictor already handles correctly (returns null).
+            //
+            // CARVE-OUT (reflection migration sweep, operational commit): SetUp
+            // deliberately sets surfaceRadiusMeters via reflection WITHOUT calling
+            // InitializeBodyForTesting afterward. The parameterized
+            // InitializeBodyForTesting(massKg, soiRadiusMeters, parentBody,
+            // surfaceRadiusMeters, atmosphericTopAltitudeMeters) overload always
+            // invokes the init path; many tests downstream rely on calling Init
+            // themselves at test time after additional per-test configuration (e.g.,
+            // SetEarthFiniteSoiAndInitialize / SetEarthSurfaceAtmosphereAndInitialize
+            // / BuildMoonAsChildOfEarth elsewhere in this file). Pre-init
+            // field-setting without init is the reason this site stays as reflection
+            // while the file's other 9 reflection sites migrated to the parameterized
+            // overload.
             {
                 var surfaceField = typeof(ReferenceBody).GetField(
                     "surfaceRadiusMeters",
@@ -1614,9 +1622,9 @@ namespace SpaceSim.Foundation.Vessels.Tests
         public void ReferenceBody_Awake_PopulatesParentBodyId_WhenParentSet()
         {
             // Set up a parent body (separate GameObject from the SetUp's _body) and wire
-            // it into a child body via reflection on the private serialized field.
-            // EditMode tests can't go through the Inspector; reflection is the cleanest
-            // way to populate [SerializeField] private fields in tests.
+            // it into a child body via the parameterized InitializeBodyForTesting
+            // overload's parentBody parameter. EditMode tests can't go through the
+            // Inspector; the test seam stays close to that.
             var parentGo = new GameObject("ParentBody");
             var parentBody = parentGo.AddComponent<ReferenceBody>();
             try
@@ -1625,14 +1633,14 @@ namespace SpaceSim.Foundation.Vessels.Tests
                 var childBody = childGo.AddComponent<ReferenceBody>();
                 try
                 {
-                    var parentBodyField = typeof(ReferenceBody).GetField(
-                        "parentBody",
-                        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                    parentBodyField.SetValue(childBody, parentBody);
-
-                    // Initialize parent first so its BodyId is populated before child reads it.
+                    // Initialize parent first so its BodyId is populated before child
+                    // reads it. Child is initialized with parentBody wired in via the
+                    // parameterized overload (no reflection on private fields needed).
                     parentBody.InitializeBodyForTesting();
-                    childBody.InitializeBodyForTesting();
+                    childBody.InitializeBodyForTesting(
+                        massKg: EarthMassKg,
+                        soiRadiusMeters: double.PositiveInfinity,
+                        parentBody: parentBody);
 
                     Assert.AreNotEqual(Guid.Empty, parentBody.BodyId,
                         "Sanity: parent's BodyId should be populated");
@@ -1681,14 +1689,12 @@ namespace SpaceSim.Foundation.Vessels.Tests
         [Test]
         public void ReferenceBody_SoiRadiusMeters_ReadsInspectorValue()
         {
-            // Reflection-set the private soiRadiusMeters field to a finite value
-            // (simulating Inspector wiring), then verify the property reads it back.
-            var soiField = typeof(ReferenceBody).GetField(
-                "soiRadiusMeters",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            soiField.SetValue(_body, 6.6e8);  // ~660,000 km, Moon-like SOI
-
-            _body.InitializeBodyForTesting();
+            // Wire a finite SOI radius via the parameterized InitializeBodyForTesting
+            // overload (the Inspector-substitute test seam). Verify the property
+            // reads it back.
+            _body.InitializeBodyForTesting(
+                massKg: EarthMassKg,
+                soiRadiusMeters: 6.6e8);  // ~660,000 km, Moon-like SOI
 
             Assert.AreEqual(6.6e8, _body.SoiRadiusMeters,
                 "Property should return the Inspector-set finite value");
@@ -1704,12 +1710,13 @@ namespace SpaceSim.Foundation.Vessels.Tests
             UnityEngine.TestTools.LogAssert.Expect(LogType.Error,
                 new System.Text.RegularExpressions.Regex(".*Inspector wires this body as its own parent.*"));
 
-            var parentBodyField = typeof(ReferenceBody).GetField(
-                "parentBody",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            parentBodyField.SetValue(_body, _body);  // self-cycle
-
-            _body.InitializeBodyForTesting();
+            // Wire the self-cycle via the parameterized InitializeBodyForTesting
+            // overload's parentBody parameter. The overload stores the reference and
+            // the runtime self-cycle check fires inside InitializeBodyForTesting.
+            _body.InitializeBodyForTesting(
+                massKg: EarthMassKg,
+                soiRadiusMeters: double.PositiveInfinity,
+                parentBody: _body);  // self-cycle — triggers the defensive check
 
             Assert.IsNull(_body.ParentBody,
                 "Self-cycle should be rejected; ParentBody should be null (top-level fallback)");
@@ -1739,27 +1746,15 @@ namespace SpaceSim.Foundation.Vessels.Tests
             moonGo.transform.position = new Vector3((float)EarthMoonDistanceMeters, 0, 0);
             var moon = moonGo.AddComponent<ReferenceBody>();
 
-            // Set Moon's mass via reflection (the [SerializeField] private massKg field).
-            var massField = typeof(ReferenceBody).GetField(
-                "massKg",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            massField.SetValue(moon, MoonMassKg);
-
-            // Set Moon's SOI radius via reflection.
-            var soiField = typeof(ReferenceBody).GetField(
-                "soiRadiusMeters",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            soiField.SetValue(moon, MoonSoiRadiusMeters);
-
-            // Wire _body (Earth) as Moon's parent.
-            var parentField = typeof(ReferenceBody).GetField(
-                "parentBody",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            parentField.SetValue(moon, _body);
-
             // Make sure Earth's BodyId is populated before Moon resolves its parent.
             _body.InitializeBodyForTesting();
-            moon.InitializeBodyForTesting();
+
+            // Configure Moon with mass + finite SOI + Earth as parent via the
+            // parameterized InitializeBodyForTesting overload.
+            moon.InitializeBodyForTesting(
+                massKg: MoonMassKg,
+                soiRadiusMeters: MoonSoiRadiusMeters,
+                parentBody: _body);
 
             return moon;
         }
@@ -2273,11 +2268,11 @@ namespace SpaceSim.Foundation.Vessels.Tests
         /// </summary>
         private void SetEarthFiniteSoiAndInitialize(double soiRadiusMeters)
         {
-            var soiField = typeof(ReferenceBody).GetField(
-                "soiRadiusMeters",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            soiField.SetValue(_body, soiRadiusMeters);
-            _body.InitializeBodyForTesting();
+            // Named wrapper preserved (semantic anchor): the test reads as "this test
+            // wants Earth with a finite SOI" rather than as a generic init call.
+            _body.InitializeBodyForTesting(
+                massKg: EarthMassKg,
+                soiRadiusMeters: soiRadiusMeters);
         }
 
         /// <summary>
@@ -2423,17 +2418,13 @@ namespace SpaceSim.Foundation.Vessels.Tests
         private void SetEarthSurfaceAtmosphereAndInitialize(
             double surfaceRadius, double atmosphericTop)
         {
-            var surfaceField = typeof(ReferenceBody).GetField(
-                "surfaceRadiusMeters",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            surfaceField.SetValue(_body, surfaceRadius);
-
-            var atmField = typeof(ReferenceBody).GetField(
-                "atmosphericTopAltitudeMeters",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            atmField.SetValue(_body, atmosphericTop);
-
-            _body.InitializeBodyForTesting();
+            // Named wrapper preserved (semantic anchor): the test reads as "this test
+            // wants Earth with surface + atmosphere" rather than as a generic init call.
+            _body.InitializeBodyForTesting(
+                massKg: EarthMassKg,
+                soiRadiusMeters: double.PositiveInfinity,
+                surfaceRadiusMeters: surfaceRadius,
+                atmosphericTopAltitudeMeters: atmosphericTop);
         }
 
         /// <summary>

@@ -148,25 +148,24 @@ namespace SpaceSim.Foundation.Vessels.Tests
         [Test]
         public void BodyRegistry_GetChildrenOf_FindsChildren()
         {
-            // Construct a parent-child relationship by assigning _body2's parent to _body1
-            // via reflection on the private serialized field. We can't go through the
-            // Inspector in EditMode tests, so this is the cleanest way to set up the
-            // relationship for testing GetChildrenOf.
-            //
-            // Note: this test uses reflection on private fields; if the ReferenceBody
-            // private-field layout changes, the test breaks. The reflection target
-            // ("parentBody") is the [SerializeField] private field on ReferenceBody.
-            var parentBodyField = typeof(ReferenceBody).GetField(
-                "parentBody",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            Assert.IsNotNull(parentBodyField, "Sanity: parentBody field should exist via reflection");
-            parentBodyField.SetValue(_body2, _body1);
-
-            // Re-initialize _body2 to resolve the parent reference into ParentBody.
-            // ClearForTesting then re-register to keep the registry consistent.
+            // Wire _body1 as _body2's parent via the parameterized
+            // InitializeBodyForTesting overload's parentBody parameter. The
+            // reflection-on-private-fields path that previously set up this
+            // relationship has been replaced by the typed overload (introduced in
+            // the ReferenceBody test-seam cleanup commit 293d2b4). The compiler now
+            // serves the "parentBody field exists" sanity-check function that the
+            // prior Assert.IsNotNull on parentBodyField performed — if the overload's
+            // signature ever changes, the migration breaks at build time. The mass /
+            // SOI values match the field defaults the prior no-arg
+            // InitializeBodyForTesting calls preserved; the test asserts only on
+            // registry behavior (Children count + identity), not on mass / SOI, so
+            // the explicit pass is documentation, not a semantic change.
             BodyRegistry.ClearForTesting();
             _body1.InitializeBodyForTesting();
-            _body2.InitializeBodyForTesting();
+            _body2.InitializeBodyForTesting(
+                massKg: 5.972e24,
+                soiRadiusMeters: double.PositiveInfinity,
+                parentBody: _body1);
 
             // _body1 has no parent (top-level); _body2 has _body1 as parent.
             var childrenOfBody1 = BodyRegistry.GetChildrenOf(_body1);
