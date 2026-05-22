@@ -64,13 +64,18 @@ namespace SpaceSim.Foundation.Vessels
     /// <para>
     /// <strong>PER-PREDICTOR EXCEPTION ISOLATION (commit 046):</strong>
     /// Inside <see cref="PredictAndUpdate"/>, each predictor (PeriapsisApoapsis,
-    /// SoiCrossing) runs inside its own try/catch. A failure in one predictor logs
-    /// an error and the other predictor still executes. This is per-predictor
-    /// isolation rather than per-vessel-all-or-nothing — the netcode contract's
-    /// commitment to keep event predictions current is honored on a best-effort
-    /// basis even when one predictor degrades. The outer try/catch in
+    /// SoiCrossing, AtmosphericEntry, SurfaceImpact) runs inside its own
+    /// try/catch. A failure in one predictor logs an error and the remaining
+    /// predictors still execute. This is per-predictor isolation rather than
+    /// per-vessel-all-or-nothing — the netcode contract's commitment to keep
+    /// event predictions current is honored on a best-effort basis even when
+    /// one predictor degrades. The outer try/catch in
     /// <see cref="OnTickAdvanced"/> remains as a safety net for schema-invariant
     /// violations or unforeseen failures that propagate past the inner catches.
+    /// As of the IVessel-migration commit, <see cref="PredictAndUpdate"/>
+    /// takes <see cref="IVessel"/> rather than concrete <see cref="Vessel"/>
+    /// so the per-predictor isolation logic is unit-testable against POCO
+    /// fakes; see <see cref="PredictAndUpdate"/> for the rationale.
     /// </para>
     ///
     /// <para>
@@ -201,6 +206,14 @@ namespace SpaceSim.Foundation.Vessels
                 }
                 catch (Exception ex)
                 {
+                    // Outer catch stays in concrete-Vessel context (vessel is
+                    // typed Vessel at the iteration boundary, not IVessel),
+                    // so the gameObject null-ternary is the natural pattern
+                    // here. Inner per-predictor catches inside PredictAndUpdate
+                    // use vessel.DiagnosticName because their vessel reference
+                    // is IVessel-typed. The asymmetry is deliberate: outer
+                    // iteration uses Unity-null semantics from VesselRegistry,
+                    // inner predictor dispatch is interface-typed for testability.
                     string name = vessel != null && vessel.gameObject != null
                         ? vessel.gameObject.name : "(null)";
                     Debug.LogError(
@@ -212,18 +225,36 @@ namespace SpaceSim.Foundation.Vessels
 
         /// <summary>
         /// Per-vessel predict + update. Each predictor (PeriapsisApoapsis,
-        /// SoiCrossing) runs inside its own try/catch for per-predictor isolation.
-        /// A failure in one predictor logs an error and the other predictor still
-        /// executes. The outer try/catch in <see cref="OnTickAdvanced"/> handles
-        /// schema-invariant violations or unforeseen failures that escape the
-        /// inner catches.
+        /// SoiCrossing, AtmosphericEntry, SurfaceImpact) runs inside its own
+        /// try/catch for per-predictor isolation. A failure in one predictor
+        /// logs an error and the remaining predictors still execute. The outer
+        /// try/catch in <see cref="OnTickAdvanced"/> handles schema-invariant
+        /// violations or unforeseen failures that escape the inner catches.
         ///
         /// Predictor order: PeriapsisApoapsisPredictor first, then
-        /// SoiCrossingPredictor. Stable iteration order keeps the diagnostic logs
-        /// and queue update ordering deterministic across ticks.
+        /// SoiCrossingPredictor, then AtmosphericEntryPredictor + SurfaceImpact
+        /// (whose results combine via min-of-both into NextModeTransitionTick).
+        /// Stable iteration order keeps the diagnostic logs and queue update
+        /// ordering deterministic across ticks.
+        ///
+        /// <para>
+        /// <strong>IVessel PARAMETER (commit landing this stage):</strong>
+        /// takes <see cref="IVessel"/> rather than concrete
+        /// <see cref="Vessel"/> to decouple the per-predictor invocation from
+        /// Unity's <see cref="UnityEngine.GameObject"/> type. This enables
+        /// POCO test fakes (see
+        /// <c>VesselEventPredictionDriverTests.PredictAndUpdate_AcceptsIVesselFake_WritesPredictedTicks</c>)
+        /// to exercise the predictor-dispatch logic without constructing real
+        /// Vessel MonoBehaviours. The outer <see cref="OnTickAdvanced"/> loop
+        /// stays on concrete <see cref="Vessel"/> because
+        /// <see cref="VesselRegistry.Vessels"/> returns concrete Vessel and
+        /// Unity-null semantics still apply at the registry-iteration
+        /// boundary; the cast Vessel → IVessel happens implicitly at the call
+        /// to <see cref="PredictAndUpdate"/>.
+        /// </para>
         /// </summary>
         private static void PredictAndUpdate(
-            Vessel vessel,
+            IVessel vessel,
             ReferenceBody currentBody,
             SimTickController controller,
             long tickNumber)
@@ -256,11 +287,9 @@ namespace SpaceSim.Foundation.Vessels
             }
             catch (Exception ex)
             {
-                string name = vessel.gameObject != null
-                    ? vessel.gameObject.name : "(null)";
                 Debug.LogError(
                     $"VesselEventPredictionDriver: PeriapsisApoapsisPredictor failed " +
-                    $"on vessel '{name}' at tick {tickNumber}: {ex}");
+                    $"on vessel '{vessel.DiagnosticName}' at tick {tickNumber}: {ex}");
                 // Continue to SoiCrossingPredictor — per-predictor isolation.
             }
 
@@ -284,11 +313,9 @@ namespace SpaceSim.Foundation.Vessels
             }
             catch (Exception ex)
             {
-                string name = vessel.gameObject != null
-                    ? vessel.gameObject.name : "(null)";
                 Debug.LogError(
                     $"VesselEventPredictionDriver: SoiCrossingPredictor failed " +
-                    $"on vessel '{name}' at tick {tickNumber}: {ex}");
+                    $"on vessel '{vessel.DiagnosticName}' at tick {tickNumber}: {ex}");
                 // PeriapsisApoapsis writes already landed above — that's per-predictor
                 // isolation working as designed.
             }
@@ -316,11 +343,9 @@ namespace SpaceSim.Foundation.Vessels
             }
             catch (Exception ex)
             {
-                string name = vessel.gameObject != null
-                    ? vessel.gameObject.name : "(null)";
                 Debug.LogError(
                     $"VesselEventPredictionDriver: AtmosphericEntryPredictor failed " +
-                    $"on vessel '{name}' at tick {tickNumber}: {ex}");
+                    $"on vessel '{vessel.DiagnosticName}' at tick {tickNumber}: {ex}");
                 // atmosphericEntryTick stays null; surface-impact predictor still runs.
             }
 
@@ -337,11 +362,9 @@ namespace SpaceSim.Foundation.Vessels
             }
             catch (Exception ex)
             {
-                string name = vessel.gameObject != null
-                    ? vessel.gameObject.name : "(null)";
                 Debug.LogError(
                     $"VesselEventPredictionDriver: SurfaceImpactPredictor failed " +
-                    $"on vessel '{name}' at tick {tickNumber}: {ex}");
+                    $"on vessel '{vessel.DiagnosticName}' at tick {tickNumber}: {ex}");
                 // surfaceImpactTick stays null.
             }
 

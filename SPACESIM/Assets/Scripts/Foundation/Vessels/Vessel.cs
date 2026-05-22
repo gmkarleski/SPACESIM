@@ -42,7 +42,7 @@ namespace SpaceSim.Foundation.Vessels
     /// inline comment in <see cref="TransitionToPhysXActive"/> for the deferred work.
     /// </summary>
     [DisallowMultipleComponent]
-    public sealed class Vessel : MonoBehaviour, IActiveVessel
+    public sealed class Vessel : MonoBehaviour, IActiveVessel, IVessel
     {
         // ----- State -----
 
@@ -60,6 +60,16 @@ namespace SpaceSim.Foundation.Vessels
 
         /// <summary>Reference body whose gravity defines the vessel's orbital frame.</summary>
         public ReferenceBody ReferenceBody => _referenceBody;
+
+        /// <summary>
+        /// Unity-free diagnostic identifier for this vessel. Returns the
+        /// GameObject's name when the reference is set, or "(null)" if the
+        /// GameObject is missing (which can happen transiently during scene
+        /// destruction). Implements <see cref="IVessel.DiagnosticName"/>;
+        /// used by per-tick driver catch-block log messages so the driver
+        /// loop doesn't need to take a hard <c>gameObject.name</c> path.
+        /// </summary>
+        public string DiagnosticName => gameObject != null ? gameObject.name : "(null)";
 
         // ----- Internal state -----
 

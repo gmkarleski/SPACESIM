@@ -45,6 +45,8 @@ Vessels → SimTick → Coordinates
 
 The `IActiveVessel` interface (in `SimTick`) breaks what would otherwise be a Vessels↔SimTick cycle: SimTick code that needs to query vessel state takes `IActiveVessel`, and `Vessel` implements it. Drivers in Vessels (`VesselTransitionDriver`, `VesselSoiRerootingDriver`, `VesselEventPredictionDriver`) subscribe to `SimTickController.TickAdvanced` from outside the controller, preserving the asmdef direction.
 
+A second interface, `IVessel` (in `Vessels`), narrows the per-tick driver→vessel contract for testability rather than for cycle-breaking. `VesselEventPredictionDriver.PredictAndUpdate` consumes `IVessel` so POCO test fakes can exercise its per-predictor dispatch without constructing real Vessel MonoBehaviours. See §3.4 for the contrast between the two interface abstractions.
+
 Lower modules never reference higher modules. Tests that need to cross module boundaries (e.g., SimTick tests verifying integration with Coordinates) live in the higher module's Tests folder and reference both.
 
 ---
@@ -135,6 +137,20 @@ Two coordinate spaces with non-interchangeable types:
 - `LocalPosition` wraps `Vector3`; lives in floating-origin-relative coordinates
 
 No implicit conversions. Named methods (`WorldToLocal`, `LocalToWorld`) require the current origin as an explicit parameter, so the math is testable without instantiating a manager.
+
+### 3.4 Interface abstractions for drivers
+
+Two distinct interfaces narrow what driver code knows about vessels. They look superficially similar (both have `Mode` and `GetWorldPosition()`) but serve different architectural purposes.
+
+`IActiveVessel` (in `SimTick`) breaks an asmdef cycle. SimTickController's step 6 needs to query the active vessel's position (for floating-origin shift detection) and mode (for warp-ceiling selection), but `Vessel` lives in the higher Vessels asmdef. The interface lets SimTick consume the contract without referencing Vessels. Members: `Mode`, `GetWorldPosition()`. Implementers: production `Vessel`, plus POCO stubs in SimTick's own tests.
+
+`IVessel` (in `Vessels`) narrows the per-tick driver→vessel contract for testability. Inside `VesselEventPredictionDriver.PredictAndUpdate`, the driver iterates over Kepler-rails vessels and dispatches predictors; the contract it actually needs is read-only and small (Mode + State + ReferenceBody + GetWorldPosition + DiagnosticName). Typing the inner method against `IVessel` enables POCO test fakes that exercise the predictor-dispatch logic without constructing real Vessel MonoBehaviours.
+
+The two interfaces are independent (no inheritance). Inheriting one from the other would force SimTick's asmdef into the declaration site of the other interface for no operational gain. `Vessel` implements both interfaces directly; the shared members (`Mode`, `GetWorldPosition()`) are satisfied by a single concrete implementation each.
+
+**Scope discipline (`IVessel`).** The interface is deliberately read-only — no mode-transition methods, no SOI re-root, no schema mutations. Mutating lifecycle operations belong on the concrete `Vessel` type, where Unity-component-shape changes can actually happen. `VesselEventPredictionDriver` lifts cleanly onto `IVessel` because its mutations write to schema fields that the interface exposes (`State.KeplerState.NextPeriapsisTick`, etc.) and to `SimTickController.EventQueue` (not on the vessel itself). `VesselSoiRerootingDriver` does not lift, because its inner method calls `vessel.ReRootToBody(parentBody)` — a mutating lifecycle method that's incompatible with the read-only contract. The SOI re-rooter stays on concrete `Vessel`; a future commit may split its detect-vs-dispatch concerns if SOI-rerooter test needs justify it. `VesselTransitionDriver` similarly stays on concrete `Vessel` because `TransitionToKeplerRails` / `TransitionToPhysXActive` are even more mutating (they add and destroy Unity components).
+
+**Inner-method-only migration pattern.** Where `IVessel` is used, the outer `OnTickAdvanced` iteration loop stays typed against concrete `Vessel` (the iteration boundary uses Unity-null semantics from `VesselRegistry.Vessels`), and the inner per-vessel method takes `IVessel`. The implicit upcast happens at the call site. This asymmetry is deliberate: outer iteration is production-Unity territory; inner per-vessel logic is the surface that wants test fakes. Catch-block diagnostics follow the same split — outer catch uses `vessel.gameObject.name` (concrete-Vessel context), inner catches use `vessel.DiagnosticName` (IVessel context).
 
 ---
 
