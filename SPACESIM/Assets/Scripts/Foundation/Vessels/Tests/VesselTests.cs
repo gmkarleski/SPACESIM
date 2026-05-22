@@ -9,6 +9,7 @@ using UnityEngine;
 // UnityObject.DestroyImmediate (UnityEngine.Object) for GameObject cleanup; bare 'Object'
 // is ambiguous when both 'using System' and 'using UnityEngine' are present.
 using UnityObject = UnityEngine.Object;
+using static SpaceSim.Foundation.Vessels.Tests.VesselTestHelpers;
 
 namespace SpaceSim.Foundation.Vessels.Tests
 {
@@ -35,7 +36,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
     {
         private const double EarthMassKg = 5.972e24;
         private static readonly double EarthMu = CoordinateMath.G * EarthMassKg;
-        private const double LeoRadius = 7_000_000.0;
+        // LeoRadius moved to VesselTestHelpers (imported via `using static`).
 
         private GameObject _vesselGo;
         private GameObject _bodyGo;
@@ -118,38 +119,12 @@ namespace SpaceSim.Foundation.Vessels.Tests
 
         // ----- Helpers -----
 
-        private VesselAuthoritativeState NewState(PhysicsMode mode = PhysicsMode.PhysXActive)
-        {
-            return new VesselAuthoritativeState
-            {
-                VesselId = Guid.NewGuid(),
-                DesignId = Guid.NewGuid(),
-                Name = "TestVessel",
-                TotalMassKg = 1000.0,
-                Mode = mode,
-            };
-        }
-
-        /// <summary>
-        /// Construct a default circular-LEO KeplerState for tests that need to pass a
-        /// KeplerState to the 4-arg Initialize overload. The specific elements don't
-        /// matter for most tests — what matters is that the state is non-null and
-        /// internally consistent.
-        /// </summary>
-        private KeplerState NewKeplerState()
-        {
-            return new KeplerState
-            {
-                SemiMajorAxis = LeoRadius,
-                Eccentricity = 0.0,
-                Inclination = 0.0,
-                LongitudeOfAscendingNode = 0.0,
-                ArgumentOfPeriapsis = 0.0,
-                TrueAnomalyAtEpoch = 0.0,
-                EpochTick = 0,
-                ReferenceBodyId = _body != null ? _body.BodyId : Guid.Empty,
-            };
-        }
+        // NewState / NewKeplerState / BuildMoonAsChildOfEarth helpers consolidated
+        // into VesselTestHelpers (imported via `using static` at top of file).
+        // Earth-Moon constants (EarthMoonDistanceMeters / MoonMassKg / MoonSoiRadiusMeters)
+        // and the LeoRadius constant also moved there. Local EarthMassKg + EarthMu
+        // declarations stay pending a separate 8-file constant consolidation commit
+        // flagged in the test infrastructure sweep's "What's next" follow-ons.
 
         // ----- Initialize -----
 
@@ -182,7 +157,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
             // Updated in commit 042: uses the 4-arg overload with a default KeplerState.
             // The 3-arg overload now rejects KeplerRails (would fall back to PhysXActive),
             // which would invert this test's assertions.
-            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, NewKeplerState());
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, NewKeplerState(_body));
 
             Assert.IsNull(_vessel.Rigidbody, "Rigidbody should not be present in Kepler-rails mode");
             Assert.IsNull(_vesselGo.GetComponent<FloatingOriginAnchor>(),
@@ -297,7 +272,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
             // followed by a manual State.KeplerState assignment workaround for the now-fixed
             // state-inconsistency bug. For this guard test the actual contents of KeplerState
             // don't matter beyond non-null.
-            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, NewKeplerState());
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, NewKeplerState(_body));
 
             // Capture the expected warning.
             UnityEngine.TestTools.LogAssert.Expect(LogType.Warning,
@@ -1071,7 +1046,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
         {
             // Happy path: 4-arg Initialize with KeplerRails + a real KeplerState
             // populates State.KeplerState and sets Mode == KeplerRails.
-            var inputKepler = NewKeplerState();
+            var inputKepler = NewKeplerState(_body);
             _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, inputKepler);
 
             Assert.AreEqual(PhysicsMode.KeplerRails, _vessel.Mode);
@@ -1110,7 +1085,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
             UnityEngine.TestTools.LogAssert.Expect(LogType.Error,
                 new System.Text.RegularExpressions.Regex(".*4-arg overload with PhysicsMode.PhysXActive.*"));
 
-            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive, NewKeplerState());
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive, NewKeplerState(_body));
 
             Assert.AreEqual(PhysicsMode.PhysXActive, _vessel.Mode);
             Assert.IsNull(_vessel.State.KeplerState,
@@ -1145,7 +1120,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
             // which covers the same property under a different focus (that test
             // asserts component shape; this one asserts component shape under the
             // 4-arg overload specifically).
-            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, NewKeplerState());
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, NewKeplerState(_body));
 
             Assert.IsNull(_vessel.Rigidbody, "Rigidbody should not be present in Kepler-rails mode");
             Assert.IsNull(_vesselGo.GetComponent<FloatingOriginAnchor>(),
@@ -1184,37 +1159,11 @@ namespace SpaceSim.Foundation.Vessels.Tests
 
         // ----- Trigger evaluation: EvaluateTransitionTriggers (commit 043) -----
 
-        /// <summary>
-        /// Stub IActiveVessel used as the proximity reference in trigger-evaluation
-        /// tests. Returns the constructor-supplied world position and mode. Useful for
-        /// controlling distance-to-active-vessel independently of any real Vessel
-        /// instance.
-        /// </summary>
-        private class StubActiveVessel : IActiveVessel
-        {
-            private readonly WorldPosition _pos;
-            private readonly PhysicsMode _mode;
-            public StubActiveVessel(WorldPosition pos, PhysicsMode mode = PhysicsMode.PhysXActive)
-            {
-                _pos = pos;
-                _mode = mode;
-            }
-            public WorldPosition GetWorldPosition() => _pos;
-            public PhysicsMode Mode => _mode;
-        }
-
-        /// <summary>
-        /// Stub IActiveVessel that throws on GetWorldPosition. Used to verify the
-        /// driver's exception handling around the per-vessel evaluation call.
-        /// </summary>
-        private class ThrowingActiveVessel : IActiveVessel
-        {
-            public WorldPosition GetWorldPosition()
-            {
-                throw new InvalidOperationException("Stub throws by design");
-            }
-            public PhysicsMode Mode => PhysicsMode.PhysXActive;
-        }
+        // StubActiveVessel + ThrowingActiveVessel stub types extracted to
+        // VesselTestHelpers (resolved via the namespace's regular `using`).
+        // Used here by the EvaluateTransitionTriggers tests and previously also
+        // by the VesselTransitionDriver tests (migrated to
+        // VesselTransitionDriverTests.cs in the test infrastructure sweep).
 
         [Test]
         public void EvaluateTransitionTriggers_BeforeInitialize_ReturnsStay()
@@ -1313,7 +1262,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
             // EpochTick = 0; with no SimTickController, propagation returns epoch state
             // (dt = 0); position of the orbit at TrueAnomaly = 0 is (a, 0, 0) = LeoRadius.
             // We place the active reference at LeoRadius too (proximity 0).
-            var kepler = NewKeplerState();
+            var kepler = NewKeplerState(_body);
             _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
 
             var activeRef = new StubActiveVessel(new WorldPosition(LeoRadius, 0, 0));
@@ -1330,7 +1279,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
         {
             // KeplerRails vessel beyond 50 km of active reference, and none of the
             // stub disjunctive conditions fire (all stub-false in Phase 0). Result: Stay.
-            var kepler = NewKeplerState();
+            var kepler = NewKeplerState(_body);
             _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
 
             // Active reference at origin; vessel propagated position at (LeoRadius, 0, 0).
@@ -1356,7 +1305,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
             SimTickController.SetInstanceForTesting(controller);
             controller.SetTickNumberForTesting(100);
 
-            var kepler = NewKeplerState();
+            var kepler = NewKeplerState(_body);
             kepler.NextModeTransitionTick = 101;  // current (100) + 1
             _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
 
@@ -1402,218 +1351,6 @@ namespace SpaceSim.Foundation.Vessels.Tests
             Assert.IsFalse(result.SuggestedMode.HasValue,
                 "Null active reference → Stay (cannot evaluate proximity)");
             Assert.AreEqual(TransitionTriggerReason.None, result.Reason);
-        }
-
-        // ----- VesselTransitionDriver tests (commit 043) -----
-
-        /// <summary>
-        /// Helper: construct a SimTickController, register an active vessel stub, and
-        /// initialize the driver. Returns the controller for tests that need direct
-        /// access (e.g., to fire TickAdvanced manually).
-        /// </summary>
-        private SimTickController SetUpDriverWithStubActiveVessel(IActiveVessel activeVessel)
-        {
-            _simTickGo = new GameObject("TestSimTick");
-            var controller = _simTickGo.AddComponent<SimTickController>();
-            SimTickController.SetInstanceForTesting(controller);
-            controller.SetActiveVessel(activeVessel);
-            VesselTransitionDriver.Initialize();
-            return controller;
-        }
-
-        [Test]
-        public void TransitionDriver_DisabledByDefault_DoesNothing()
-        {
-            // Default state: Enabled = false. Firing TickAdvanced (via direct
-            // OnTickAdvanced invocation, since EditMode has no FixedUpdate cycle)
-            // should be a complete no-op — no evaluation, no transition, no counter increment.
-            var stubActive = new StubActiveVessel(new WorldPosition(0, 0, 0));
-            SetUpDriverWithStubActiveVessel(stubActive);
-
-            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
-            _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
-            // In EditMode, OnEnable doesn't fire, so the vessel isn't auto-registered.
-            // Initialize itself calls VesselRegistry.RegisterVesselSafe inside the
-            // isActiveAndEnabled guard which IS true in EditMode for newly added
-            // components, so the registration does happen — verify and proceed.
-            Assert.AreEqual(1, VesselRegistry.VesselCount,
-                "Sanity: vessel should be registered after Initialize");
-
-            Assert.IsFalse(VesselTransitionDriver.Enabled,
-                "Sanity: driver should be disabled by default");
-
-            VesselTransitionDriver.OnTickAdvanced(tickNumber: 1);
-
-            Assert.AreEqual(0, VesselTransitionDriver.EvaluationCount,
-                "Disabled driver should not evaluate vessels");
-            Assert.AreEqual(0, VesselTransitionDriver.TransitionCount,
-                "Disabled driver should not transition vessels");
-            Assert.AreEqual(PhysicsMode.PhysXActive, _vessel.Mode,
-                "Disabled driver should not change vessel mode");
-        }
-
-        [Test]
-        public void TransitionDriver_WhenEnabled_EvaluatesVesselsOnTickAdvanced()
-        {
-            // With Enabled = true, OnTickAdvanced iterates registered vessels and calls
-            // EvaluateTransitionTriggers on each. We register one vessel within proximity
-            // (so the evaluation returns Stay rather than firing a transition); the
-            // diagnostic counter should still increment to confirm the call happened.
-            var stubActive = new StubActiveVessel(new WorldPosition(0, 0, 0));
-            SetUpDriverWithStubActiveVessel(stubActive);
-
-            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
-            _vessel.Rigidbody.position = new Vector3(10_000f, 0f, 0f);  // within proximity
-
-            VesselTransitionDriver.Enabled = true;
-            VesselTransitionDriver.OnTickAdvanced(tickNumber: 1);
-
-            Assert.AreEqual(1, VesselTransitionDriver.EvaluationCount,
-                "Enabled driver should evaluate 1 vessel (the one we registered)");
-            Assert.AreEqual(0, VesselTransitionDriver.TransitionCount,
-                "Within-proximity vessel should not transition");
-            Assert.AreEqual(PhysicsMode.PhysXActive, _vessel.Mode);
-        }
-
-        [Test]
-        public void TransitionDriver_WhenEnabled_FiresTransitionForVesselBeyondProximity()
-        {
-            // The end-to-end happy path: enabled driver iterates vessels, finds one
-            // beyond proximity with clean state, fires TransitionToKeplerRails.
-            // Suppress the expected diagnostic log so the test runner doesn't choke.
-            UnityEngine.TestTools.LogAssert.Expect(LogType.Log,
-                new System.Text.RegularExpressions.Regex(".*transitioning PhysXActive → KeplerRails.*"));
-
-            var stubActive = new StubActiveVessel(new WorldPosition(0, 0, 0));
-            SetUpDriverWithStubActiveVessel(stubActive);
-
-            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
-            _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
-            float vCircular = (float)math.sqrt(EarthMu / LeoRadius);
-            _vessel.Rigidbody.linearVelocity = new Vector3(0f, vCircular, 0f);
-
-            VesselTransitionDriver.Enabled = true;
-            VesselTransitionDriver.OnTickAdvanced(tickNumber: 1);
-
-            Assert.AreEqual(1, VesselTransitionDriver.EvaluationCount);
-            Assert.AreEqual(1, VesselTransitionDriver.TransitionCount,
-                "Beyond-proximity clean-state vessel should fire a transition");
-            Assert.AreEqual(PhysicsMode.KeplerRails, _vessel.Mode,
-                "Vessel mode should be KeplerRails after driver-invoked transition");
-            Assert.IsNotNull(_vessel.State.KeplerState,
-                "KeplerState should be populated after transition");
-        }
-
-        [Test]
-        public void TransitionDriver_DiagnosticCountersIncrementCorrectly()
-        {
-            // Two-tick scenario: vessel is within proximity → evaluates but doesn't
-            // transition (counter: 1, 0). On second tick, vessel teleported beyond
-            // proximity → evaluates AND transitions (counter: 2, 1).
-            UnityEngine.TestTools.LogAssert.Expect(LogType.Log,
-                new System.Text.RegularExpressions.Regex(".*transitioning PhysXActive → KeplerRails.*"));
-
-            var stubActive = new StubActiveVessel(new WorldPosition(0, 0, 0));
-            SetUpDriverWithStubActiveVessel(stubActive);
-
-            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
-            _vessel.Rigidbody.position = new Vector3(10_000f, 0f, 0f);
-            float vCircular = (float)math.sqrt(EarthMu / LeoRadius);
-
-            VesselTransitionDriver.Enabled = true;
-
-            // Tick 1: within proximity → eval but no transition.
-            VesselTransitionDriver.OnTickAdvanced(tickNumber: 1);
-            Assert.AreEqual(1, VesselTransitionDriver.EvaluationCount);
-            Assert.AreEqual(0, VesselTransitionDriver.TransitionCount);
-
-            // Teleport to LEO (beyond proximity) and apply circular velocity so the
-            // resulting Kepler-rails state is well-defined.
-            _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
-            _vessel.Rigidbody.linearVelocity = new Vector3(0f, vCircular, 0f);
-
-            // Tick 2: beyond proximity → eval AND transition.
-            VesselTransitionDriver.OnTickAdvanced(tickNumber: 2);
-            Assert.AreEqual(2, VesselTransitionDriver.EvaluationCount,
-                "EvaluationCount should be 2 after two ticks");
-            Assert.AreEqual(1, VesselTransitionDriver.TransitionCount,
-                "TransitionCount should be 1 (one transition fired on tick 2)");
-        }
-
-        [Test]
-        public void TransitionDriver_VesselThatThrowsDuringEvaluation_LoopContinues()
-        {
-            // Verify the driver's per-vessel try/catch isolates failures: a throwing
-            // ActiveVessel (whose GetWorldPosition raises an exception) causes every
-            // vessel's evaluation to throw during the proximity-distance check. The
-            // driver should log errors for each but continue iterating. EvaluationCount
-            // increments BEFORE the try-block per the driver implementation, so both
-            // vessels should contribute to the counter even though both throw.
-            //
-            // Two vessels registered: _vessel from SetUp, plus a second one we
-            // construct here. Both should be evaluated; both should throw; both error
-            // logs should fire.
-            UnityEngine.TestTools.LogAssert.Expect(LogType.Error,
-                new System.Text.RegularExpressions.Regex(".*threw during EvaluateTransitionTriggers.*"));
-            UnityEngine.TestTools.LogAssert.Expect(LogType.Error,
-                new System.Text.RegularExpressions.Regex(".*threw during EvaluateTransitionTriggers.*"));
-
-            var throwingActive = new ThrowingActiveVessel();
-            SetUpDriverWithStubActiveVessel(throwingActive);
-
-            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
-            _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
-
-            // Add a second vessel (will be auto-registered via Initialize).
-            var secondVesselGo = new GameObject("SecondVessel");
-            var secondVessel = secondVesselGo.AddComponent<Vessel>();
-            secondVessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
-            try
-            {
-                Assert.AreEqual(2, VesselRegistry.VesselCount, "Sanity: 2 vessels registered");
-
-                VesselTransitionDriver.Enabled = true;
-                VesselTransitionDriver.OnTickAdvanced(tickNumber: 1);
-
-                Assert.AreEqual(2, VesselTransitionDriver.EvaluationCount,
-                    "Both vessels should be attempted (counter increments before try-block)");
-                Assert.AreEqual(0, VesselTransitionDriver.TransitionCount,
-                    "Both vessels threw → no transitions");
-                Assert.AreEqual(PhysicsMode.PhysXActive, _vessel.Mode,
-                    "First vessel mode unchanged after throw");
-                Assert.AreEqual(PhysicsMode.PhysXActive, secondVessel.Mode,
-                    "Second vessel mode unchanged after throw");
-            }
-            finally
-            {
-                UnityObject.DestroyImmediate(secondVesselGo);
-            }
-        }
-
-        [Test]
-        public void TransitionDriver_ActiveVesselNull_SkipsEvaluation()
-        {
-            // No SetActiveVessel call; the controller's ActiveVessel stays null. The
-            // driver should warn-once and skip without evaluating any vessel.
-            UnityEngine.TestTools.LogAssert.Expect(LogType.Warning,
-                new System.Text.RegularExpressions.Regex(".*ActiveVessel is null.*"));
-
-            _simTickGo = new GameObject("TestSimTick");
-            var controller = _simTickGo.AddComponent<SimTickController>();
-            SimTickController.SetInstanceForTesting(controller);
-            // Intentionally NOT calling controller.SetActiveVessel(...)
-            VesselTransitionDriver.Initialize();
-
-            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
-            _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
-
-            VesselTransitionDriver.Enabled = true;
-            VesselTransitionDriver.OnTickAdvanced(tickNumber: 1);
-
-            Assert.AreEqual(0, VesselTransitionDriver.EvaluationCount,
-                "Null ActiveVessel → skip evaluation entirely");
-            Assert.AreEqual(0, VesselTransitionDriver.TransitionCount);
-            Assert.AreEqual(PhysicsMode.PhysXActive, _vessel.Mode);
         }
 
         // ----- ReferenceBody SOI schema (commit 044 Stage 1) -----
@@ -1728,36 +1465,10 @@ namespace SpaceSim.Foundation.Vessels.Tests
         //
         // Earth-Moon test substrate. Constructed per-test via a helper to avoid
         // bleeding into the SetUp's single-body baseline.
-
-        private const double EarthMoonDistanceMeters = 3.844e8;
-        private const double MoonMassKg = 7.342e22;
-        private const double MoonSoiRadiusMeters = 6.6e7;  // Real Moon SOI ~66,100 km
-
-        /// <summary>
-        /// Build an Earth-Moon test substrate. The default SetUp's <c>_body</c> stays as
-        /// "Earth" at world origin with infinite SOI (top-level body); this helper adds
-        /// a "Moon" ReferenceBody at the Earth-Moon offset with finite SOI and
-        /// _body as parent. Returns the Moon body so the test can wire it as a re-root
-        /// target.
-        /// </summary>
-        private ReferenceBody BuildMoonAsChildOfEarth()
-        {
-            var moonGo = new GameObject("Moon");
-            moonGo.transform.position = new Vector3((float)EarthMoonDistanceMeters, 0, 0);
-            var moon = moonGo.AddComponent<ReferenceBody>();
-
-            // Make sure Earth's BodyId is populated before Moon resolves its parent.
-            _body.InitializeBodyForTesting();
-
-            // Configure Moon with mass + finite SOI + Earth as parent via the
-            // parameterized InitializeBodyForTesting overload.
-            moon.InitializeBodyForTesting(
-                massKg: MoonMassKg,
-                soiRadiusMeters: MoonSoiRadiusMeters,
-                parentBody: _body);
-
-            return moon;
-        }
+        //
+        // Helper + constants extracted to VesselTestHelpers (test infrastructure
+        // sweep, Commit 3 of 3). The 5 callers in the Vessel.ReRootToBody-direct
+        // tests below invoke `BuildMoonAsChildOfEarth(_body)` via `using static`.
 
         // ----- Vessel.ReRootToBody direct tests -----
 
@@ -1766,10 +1477,10 @@ namespace SpaceSim.Foundation.Vessels.Tests
         {
             // Set up Earth-rooted vessel, then re-root to Moon. Verify the cached
             // _referenceBody and the schema's ReferenceBodyId both update.
-            var moon = BuildMoonAsChildOfEarth();
+            var moon = BuildMoonAsChildOfEarth(_body);
             try
             {
-                var kepler = NewKeplerState();
+                var kepler = NewKeplerState(_body);
                 _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
 
                 Assert.AreSame(_body, _vessel.ReferenceBody, "Sanity: vessel starts Earth-rooted");
@@ -1792,10 +1503,10 @@ namespace SpaceSim.Foundation.Vessels.Tests
         {
             // The vessel's world position should be continuous across re-rooting.
             // Re-rooting just changes the reference frame; the vessel doesn't teleport.
-            var moon = BuildMoonAsChildOfEarth();
+            var moon = BuildMoonAsChildOfEarth(_body);
             try
             {
-                var kepler = NewKeplerState();  // LEO around Earth
+                var kepler = NewKeplerState(_body);  // LEO around Earth
                 _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
 
                 WorldPosition posBefore = _vessel.GetWorldPosition();
@@ -1822,7 +1533,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
         public void ReRootToBody_BeforeInitialize_LogsWarningAndNoOps()
         {
             // Pre-Initialize vessel. The guard at the top of ReRootToBody should fire.
-            var moon = BuildMoonAsChildOfEarth();
+            var moon = BuildMoonAsChildOfEarth(_body);
             try
             {
                 UnityEngine.TestTools.LogAssert.Expect(LogType.Warning,
@@ -1843,7 +1554,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
         public void ReRootToBody_WhenPhysXActive_LogsErrorAndNoOps()
         {
             // PhysXActive vessel. ReRootToBody is intra-Kepler-rails only.
-            var moon = BuildMoonAsChildOfEarth();
+            var moon = BuildMoonAsChildOfEarth(_body);
             try
             {
                 _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
@@ -1869,7 +1580,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
             // Construct the inconsistent state directly: Initialize in PhysXActive
             // (KeplerState stays null), force Mode = KeplerRails. Then ReRootToBody
             // should hit the KeplerState-null guard.
-            var moon = BuildMoonAsChildOfEarth();
+            var moon = BuildMoonAsChildOfEarth(_body);
             try
             {
                 _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
@@ -1893,7 +1604,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
         [Test]
         public void ReRootToBody_WhenNewBodyNull_LogsErrorAndNoOps()
         {
-            var kepler = NewKeplerState();
+            var kepler = NewKeplerState(_body);
             _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
 
             UnityEngine.TestTools.LogAssert.Expect(LogType.Error,
@@ -1905,712 +1616,5 @@ namespace SpaceSim.Foundation.Vessels.Tests
                 "Reference body should be unchanged after rejected re-root");
         }
 
-        // ----- VesselSoiRerootingDriver tests -----
-
-        [Test]
-        public void SoiRerootingDriver_VesselWithinSoi_DoesNotReroot()
-        {
-            // Earth-Moon multi-body world. Vessel deep inside Moon's SOI (close to
-            // Moon center). The driver should evaluate the vessel and find no
-            // crossings: distance to Moon < Moon SOI (so no outward re-root); no
-            // children of Moon to enter inward.
-            var moon = BuildMoonAsChildOfEarth();
-            try
-            {
-                // SimTickController needed for the driver. Construct + claim Instance.
-                _simTickGo = new GameObject("TestSimTick");
-                var controller = _simTickGo.AddComponent<SimTickController>();
-                SimTickController.SetInstanceForTesting(controller);
-
-                // Vessel orbiting Moon at 1000 km altitude. Position relative to Moon
-                // (in Moon's frame, since vessel will be Moon-rooted).
-                var moonOrbit = new KeplerState
-                {
-                    SemiMajorAxis = 2_737_000.0,  // Moon radius (1737km) + 1000 km altitude
-                    Eccentricity = 0.0,
-                    Inclination = 0.0,
-                    LongitudeOfAscendingNode = 0.0,
-                    ArgumentOfPeriapsis = 0.0,
-                    TrueAnomalyAtEpoch = 0.0,
-                    EpochTick = 0,
-                    ReferenceBodyId = moon.BodyId,
-                };
-                _vessel.Initialize(NewState(), moon, PhysicsMode.KeplerRails, moonOrbit);
-
-                VesselSoiRerootingDriver.OnTickAdvanced(tickNumber: 1);
-
-                Assert.AreEqual(1, VesselSoiRerootingDriver.EvaluationCount,
-                    "Driver should have evaluated 1 vessel");
-                Assert.AreEqual(0, VesselSoiRerootingDriver.RerootingCount,
-                    "Vessel inside SOI with no child crossings should NOT re-root");
-                Assert.AreSame(moon, _vessel.ReferenceBody,
-                    "Vessel should remain Moon-rooted");
-            }
-            finally
-            {
-                UnityObject.DestroyImmediate(moon.gameObject);
-            }
-        }
-
-        [Test]
-        public void SoiRerootingDriver_VesselBeyondSoi_RerootsToParent()
-        {
-            // Vessel currently Moon-rooted but at a distance from Moon that exceeds
-            // Moon's SOI. The driver should detect the outward crossing and re-root
-            // to Earth (Moon's parent).
-            var moon = BuildMoonAsChildOfEarth();
-            try
-            {
-                UnityEngine.TestTools.LogAssert.Expect(LogType.Log,
-                    new System.Text.RegularExpressions.Regex(".*exited SOI of 'Moon'.*re-rooting to parent 'TestReferenceBody'.*"));
-
-                _simTickGo = new GameObject("TestSimTick");
-                var controller = _simTickGo.AddComponent<SimTickController>();
-                SimTickController.SetInstanceForTesting(controller);
-
-                // Vessel orbit around Moon with SMA > Moon SOI. The propagator at
-                // ν₀ = 0 puts the vessel at periapsis = a(1-e); with e=0 and a=1e8 m,
-                // periapsis = 1e8 m, well beyond Moon SOI (6.6e7 m).
-                var moonEscapeOrbit = new KeplerState
-                {
-                    SemiMajorAxis = 1.0e8,
-                    Eccentricity = 0.0,
-                    Inclination = 0.0,
-                    LongitudeOfAscendingNode = 0.0,
-                    ArgumentOfPeriapsis = 0.0,
-                    TrueAnomalyAtEpoch = 0.0,
-                    EpochTick = 0,
-                    ReferenceBodyId = moon.BodyId,
-                };
-                _vessel.Initialize(NewState(), moon, PhysicsMode.KeplerRails, moonEscapeOrbit);
-
-                VesselSoiRerootingDriver.OnTickAdvanced(tickNumber: 1);
-
-                Assert.AreEqual(1, VesselSoiRerootingDriver.EvaluationCount);
-                Assert.AreEqual(1, VesselSoiRerootingDriver.RerootingCount,
-                    "Vessel beyond Moon SOI should re-root to parent (Earth)");
-                Assert.AreSame(_body, _vessel.ReferenceBody,
-                    "Vessel should now be Earth-rooted");
-                Assert.AreEqual(_body.BodyId, _vessel.State.KeplerState.ReferenceBodyId);
-            }
-            finally
-            {
-                UnityObject.DestroyImmediate(moon.gameObject);
-            }
-        }
-
-        [Test]
-        public void SoiRerootingDriver_VesselEntersChildSoi_RerootsToChild()
-        {
-            // Vessel currently Earth-rooted with an orbit that passes near the Moon
-            // (within Moon's SOI). The driver should detect the inward crossing and
-            // re-root to Moon.
-            var moon = BuildMoonAsChildOfEarth();
-            try
-            {
-                UnityEngine.TestTools.LogAssert.Expect(LogType.Log,
-                    new System.Text.RegularExpressions.Regex(".*entered SOI of 'Moon'.*"));
-
-                _simTickGo = new GameObject("TestSimTick");
-                var controller = _simTickGo.AddComponent<SimTickController>();
-                SimTickController.SetInstanceForTesting(controller);
-
-                // Construct a circular Earth orbit at Earth-Moon distance, with ν₀
-                // such that the vessel is at the Moon's exact angular position. The
-                // vessel will be at (EarthMoonDistance, 0, 0) in Earth frame —
-                // co-located with the Moon — comfortably inside Moon's SOI.
-                var earthOrbitAtMoonPosition = new KeplerState
-                {
-                    SemiMajorAxis = EarthMoonDistanceMeters,
-                    Eccentricity = 0.0,
-                    Inclination = 0.0,
-                    LongitudeOfAscendingNode = 0.0,
-                    ArgumentOfPeriapsis = 0.0,
-                    TrueAnomalyAtEpoch = 0.0,
-                    EpochTick = 0,
-                    ReferenceBodyId = _body.BodyId,
-                };
-                _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, earthOrbitAtMoonPosition);
-
-                VesselSoiRerootingDriver.OnTickAdvanced(tickNumber: 1);
-
-                Assert.AreEqual(1, VesselSoiRerootingDriver.EvaluationCount);
-                Assert.AreEqual(1, VesselSoiRerootingDriver.RerootingCount,
-                    "Vessel inside Moon's SOI should re-root to Moon");
-                Assert.AreSame(moon, _vessel.ReferenceBody);
-            }
-            finally
-            {
-                UnityObject.DestroyImmediate(moon.gameObject);
-            }
-        }
-
-        [Test]
-        public void SoiRerootingDriver_VesselWithNoParent_DoesNotRerootOutward()
-        {
-            // Top-level body (Earth in SetUp) has SoiRadiusMeters = PositiveInfinity
-            // and ParentBody == null. A vessel orbiting Earth — no matter how far —
-            // should never trigger outward re-rooting because there's no parent to
-            // re-root to AND the infinite SOI guarantees distance < SOI for any
-            // finite distance.
-            _simTickGo = new GameObject("TestSimTick");
-            var controller = _simTickGo.AddComponent<SimTickController>();
-            SimTickController.SetInstanceForTesting(controller);
-
-            // Initialize Earth (the SetUp _body) so its top-level state is in place.
-            _body.InitializeBodyForTesting();
-
-            // Vessel on an extremely wide orbit around Earth — SMA 1e10 m, far beyond
-            // any plausible SOI of a real planet. Should not trigger any re-rooting
-            // because Earth has infinite SOI.
-            var wideOrbit = new KeplerState
-            {
-                SemiMajorAxis = 1.0e10,
-                Eccentricity = 0.0,
-                Inclination = 0.0,
-                LongitudeOfAscendingNode = 0.0,
-                ArgumentOfPeriapsis = 0.0,
-                TrueAnomalyAtEpoch = 0.0,
-                EpochTick = 0,
-                ReferenceBodyId = _body.BodyId,
-            };
-            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, wideOrbit);
-
-            VesselSoiRerootingDriver.OnTickAdvanced(tickNumber: 1);
-
-            Assert.AreEqual(1, VesselSoiRerootingDriver.EvaluationCount);
-            Assert.AreEqual(0, VesselSoiRerootingDriver.RerootingCount,
-                "Vessel orbiting a top-level body (infinite SOI, no parent) should never re-root outward");
-            Assert.AreSame(_body, _vessel.ReferenceBody,
-                "Vessel should remain top-level-rooted");
-        }
-
-        // ----- VesselEventPredictionDriver tests (commit 045 Stage 2) -----
-
-        /// <summary>
-        /// Helper: construct a SimTickController + initialize the event-prediction
-        /// driver. Returns the controller for tests that need direct access (e.g.,
-        /// to read the EventQueue).
-        /// </summary>
-        private SimTickController SetUpEventPredictionDriver()
-        {
-            _simTickGo = new GameObject("TestSimTick");
-            var controller = _simTickGo.AddComponent<SimTickController>();
-            SimTickController.SetInstanceForTesting(controller);
-            VesselEventPredictionDriver.Initialize();
-            return controller;
-        }
-
-        [Test]
-        public void EventPredictionDriver_OnTickAdvanced_PopulatesPeriapsisApoapsisOnKeplerRailsVessel()
-        {
-            // Kepler-rails vessel with elliptical orbit. After one TickAdvanced fire,
-            // both NextPeriapsisTick and NextApoapsisTick should be populated.
-            SetUpEventPredictionDriver();
-
-            var kepler = NewKeplerState();
-            kepler.Eccentricity = 0.1;  // ensure elliptical (NewKeplerState defaults to circular)
-            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
-
-            // Sanity: before the driver fires, both fields should be null
-            // (predictor hasn't run yet at Initialize time in Phase 0/1 scope).
-            Assert.IsNull(_vessel.State.KeplerState.NextPeriapsisTick);
-            Assert.IsNull(_vessel.State.KeplerState.NextApoapsisTick);
-
-            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
-
-            Assert.IsNotNull(_vessel.State.KeplerState.NextPeriapsisTick,
-                "NextPeriapsisTick should be populated after driver fires");
-            Assert.IsNotNull(_vessel.State.KeplerState.NextApoapsisTick,
-                "NextApoapsisTick should be populated for elliptical orbit");
-            Assert.AreEqual(1, VesselEventPredictionDriver.EvaluationCount);
-            Assert.AreEqual(1, VesselEventPredictionDriver.PredictionUpdateCount);
-        }
-
-        [Test]
-        public void EventPredictionDriver_OnTickAdvanced_SkipsPhysXActiveVessel()
-        {
-            // PhysX-active vessel should be skipped by the driver (predictor only
-            // applies to Kepler-rails vessels).
-            SetUpEventPredictionDriver();
-
-            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
-
-            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
-
-            Assert.AreEqual(0, VesselEventPredictionDriver.EvaluationCount,
-                "PhysX-active vessel should not be evaluated by event predictor");
-            Assert.AreEqual(0, VesselEventPredictionDriver.PredictionUpdateCount);
-        }
-
-        [Test]
-        public void EventPredictionDriver_OnTickAdvanced_UpdatesPriorityQueue()
-        {
-            // After driver fires, the controller's EventQueue should have entries
-            // for the vessel's Periapsis and Apoapsis events.
-            var controller = SetUpEventPredictionDriver();
-
-            var kepler = NewKeplerState();
-            kepler.Eccentricity = 0.1;
-            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
-
-            Assert.AreEqual(0, controller.EventQueue.Count,
-                "Sanity: queue should be empty before driver fires");
-
-            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
-
-            Assert.AreEqual(2, controller.EventQueue.Count,
-                "Queue should have Periapsis and Apoapsis entries after driver fires");
-        }
-
-        [Test]
-        public void EventPredictionDriver_VesselWithNullKeplerState_IsSkipped()
-        {
-            // Construct the schema-invariant-violation state (Mode == KeplerRails but
-            // KeplerState == null) and verify the driver skips it gracefully.
-            SetUpEventPredictionDriver();
-
-            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
-            _vessel.State.Mode = PhysicsMode.KeplerRails;
-            _vessel.State.KeplerState = null;
-
-            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
-
-            Assert.AreEqual(0, VesselEventPredictionDriver.EvaluationCount,
-                "Null-KeplerState vessel should be skipped before incrementing counter");
-        }
-
-        [Test]
-        public void EventPredictionDriver_VesselThatThrows_LoopContinues()
-        {
-            // Verify per-vessel try/catch isolation: a vessel with null ReferenceBody
-            // would dereference null inside PredictAndUpdate (the predictor needs
-            // body.Mu). The driver's check at the top filters that case BEFORE
-            // incrementing EvaluationCount, so we instead use a setup that throws
-            // INSIDE the try block: register two vessels, one with normal state and
-            // one we'll force into a state that throws during prediction.
-            //
-            // Cleanest path: register vessel A (normal), register vessel B (normal),
-            // assert both evaluated. Failing-vessel coverage is exercised by the
-            // ReRootingDriver tests via the ThrowingActiveVessel stub; the event
-            // predictor doesn't take an external stub, so a throw mid-PredictAndUpdate
-            // would require a corrupted KeplerState that the existing math handles
-            // gracefully without throwing.
-            //
-            // For Phase 1, this test instead verifies the simpler property: two
-            // vessels both get evaluated. The exception-isolation code is exercised
-            // by the try/catch structure being in place; the absence of a clean
-            // throw-injection path doesn't invalidate the structural assertion.
-            SetUpEventPredictionDriver();
-
-            var kepler1 = NewKeplerState();
-            kepler1.Eccentricity = 0.1;
-            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler1);
-
-            var secondVesselGo = new GameObject("SecondVessel");
-            var secondVessel = secondVesselGo.AddComponent<Vessel>();
-            try
-            {
-                var kepler2 = NewKeplerState();
-                kepler2.Eccentricity = 0.2;
-                secondVessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler2);
-
-                Assert.AreEqual(2, VesselRegistry.VesselCount,
-                    "Sanity: 2 vessels registered");
-
-                VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
-
-                Assert.AreEqual(2, VesselEventPredictionDriver.EvaluationCount,
-                    "Both vessels should be evaluated");
-                Assert.AreEqual(2, VesselEventPredictionDriver.PredictionUpdateCount,
-                    "Both vessels should complete prediction (no throws in normal state)");
-            }
-            finally
-            {
-                UnityObject.DestroyImmediate(secondVesselGo);
-            }
-        }
-
-        [Test]
-        public void EventPredictionDriver_DiagnosticCountersIncrement()
-        {
-            // Two ticks; counters should reflect cumulative evaluations across ticks.
-            SetUpEventPredictionDriver();
-
-            var kepler = NewKeplerState();
-            kepler.Eccentricity = 0.1;
-            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
-
-            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
-            Assert.AreEqual(1, VesselEventPredictionDriver.EvaluationCount);
-            Assert.AreEqual(1, VesselEventPredictionDriver.PredictionUpdateCount);
-
-            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 2);
-            Assert.AreEqual(2, VesselEventPredictionDriver.EvaluationCount,
-                "EvaluationCount should be 2 after two ticks");
-            Assert.AreEqual(2, VesselEventPredictionDriver.PredictionUpdateCount,
-                "PredictionUpdateCount should be 2 after two ticks");
-        }
-
-        // ----- VesselEventPredictionDriver + SoiCrossingPredictor integration (commit 046 Stage 2) -----
-
-        // Test-scale Earth SOI for SOI-crossing scenarios. Reflection-set on _body to
-        // override the default PositiveInfinity. Matches the value used in
-        // SoiCrossingPredictorTests for consistency.
-        private const double TestEarthSoiRadiusMeters = 9.24e8;
-
-        /// <summary>
-        /// Reflection helper: assign a finite SOI radius to <see cref="_body"/> and
-        /// invoke <see cref="ReferenceBody.InitializeBodyForTesting"/> so the body's
-        /// PositionWorld, BodyId, and registry registration are in place. Used by
-        /// SOI-crossing integration tests to override the default infinite-SOI
-        /// top-level body.
-        /// </summary>
-        private void SetEarthFiniteSoiAndInitialize(double soiRadiusMeters)
-        {
-            // Named wrapper preserved (semantic anchor): the test reads as "this test
-            // wants Earth with a finite SOI" rather than as a generic init call.
-            _body.InitializeBodyForTesting(
-                massKg: EarthMassKg,
-                soiRadiusMeters: soiRadiusMeters);
-        }
-
-        /// <summary>
-        /// Build a KeplerState with periapsis at 2e8 m (above LEO to keep solver
-        /// stable per the Stage 1 e &lt; 0.8 constraint) and apoapsis at the given
-        /// multiplier of Earth's test SOI. Returns a state whose orbit crosses
-        /// Earth's SOI on its way to apoapsis.
-        /// </summary>
-        private KeplerState NewCrossingKeplerState(double apoMultiplierOfEarthSoi = 1.5)
-        {
-            double rPeri = 2.0e8;
-            double rApo = apoMultiplierOfEarthSoi * TestEarthSoiRadiusMeters;
-            double a = 0.5 * (rPeri + rApo);
-            double e = (rApo - rPeri) / (rApo + rPeri);
-            return new KeplerState
-            {
-                SemiMajorAxis = a,
-                Eccentricity = e,
-                Inclination = 0.0,
-                LongitudeOfAscendingNode = 0.0,
-                ArgumentOfPeriapsis = 0.0,
-                TrueAnomalyAtEpoch = 0.0,
-                EpochTick = 0,
-                ReferenceBodyId = _body != null ? _body.BodyId : Guid.Empty,
-            };
-        }
-
-        [Test]
-        public void EventPredictionDriver_OnTickAdvanced_PopulatesSoiTransitionTickOnKeplerRailsVessel()
-        {
-            // Kepler-rails vessel with an orbit that crosses Earth's (finite) SOI on
-            // its way to apoapsis. After one TickAdvanced fire, NextSoiTransitionTick
-            // should be populated alongside the existing periapsis/apoapsis fields.
-            SetUpEventPredictionDriver();
-            SetEarthFiniteSoiAndInitialize(TestEarthSoiRadiusMeters);
-
-            var kepler = NewCrossingKeplerState();
-            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
-
-            Assert.IsNull(_vessel.State.KeplerState.NextSoiTransitionTick,
-                "Sanity: NextSoiTransitionTick should be null before driver fires");
-
-            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
-
-            Assert.IsNotNull(_vessel.State.KeplerState.NextSoiTransitionTick,
-                "NextSoiTransitionTick should be populated after driver fires when " +
-                "orbit crosses Earth's SOI");
-            Assert.Greater(_vessel.State.KeplerState.NextSoiTransitionTick.Value, 0,
-                "Predicted crossing tick should be in the future");
-        }
-
-        [Test]
-        public void EventPredictionDriver_OnTickAdvanced_UpdatesQueueWithSoiCrossing()
-        {
-            // Same vessel/orbit setup as the previous test; verify the EventQueue
-            // gains a SoiCrossing entry alongside Periapsis/Apoapsis.
-            var controller = SetUpEventPredictionDriver();
-            SetEarthFiniteSoiAndInitialize(TestEarthSoiRadiusMeters);
-
-            var kepler = NewCrossingKeplerState();
-            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
-
-            Assert.AreEqual(0, controller.EventQueue.Count,
-                "Sanity: queue should be empty before driver fires");
-
-            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
-
-            // Elliptical orbit with crossing: Periapsis + Apoapsis + SoiCrossing = 3 entries.
-            Assert.AreEqual(3, controller.EventQueue.Count,
-                "Queue should have Periapsis, Apoapsis, and SoiCrossing entries for an " +
-                "elliptical orbit that crosses Earth's SOI");
-        }
-
-        [Test]
-        public void EventPredictionDriver_OnTickAdvanced_NoSoiCrossingExpected_NextSoiTransitionTickNull()
-        {
-            // Vessel in low circular orbit fully inside Earth's (finite) SOI. No
-            // children registered. The predictor's closed-form path executes and
-            // returns null at the rApo < SoiRadius early-return. The driver writes
-            // null to NextSoiTransitionTick; the queue receives no SoiCrossing entry.
-            var controller = SetUpEventPredictionDriver();
-            SetEarthFiniteSoiAndInitialize(TestEarthSoiRadiusMeters);
-
-            // Default NewKeplerState is circular LEO (rApo = LeoRadius = 7e6 m, far
-            // below 9.24e8 m Earth SOI) — orbit contained.
-            var kepler = NewKeplerState();
-            kepler.Eccentricity = 0.1;  // mildly elliptical so Periapsis/Apoapsis still populate
-            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
-
-            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
-
-            Assert.IsNull(_vessel.State.KeplerState.NextSoiTransitionTick,
-                "NextSoiTransitionTick should be null when orbit is fully inside Earth's SOI");
-
-            // Queue should have Periapsis + Apoapsis (2 entries), not 3.
-            Assert.AreEqual(2, controller.EventQueue.Count,
-                "Queue should have only Periapsis + Apoapsis entries when no SOI crossing is predicted");
-        }
-
-        [Test]
-        public void EventPredictionDriver_OnTickAdvanced_BothPredictorsRun_BothFieldsPopulated()
-        {
-            // Vessel with elliptical orbit that crosses Earth's SOI. All three
-            // prediction fields should populate after one driver tick.
-            var controller = SetUpEventPredictionDriver();
-            SetEarthFiniteSoiAndInitialize(TestEarthSoiRadiusMeters);
-
-            var kepler = NewCrossingKeplerState();
-            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
-
-            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
-
-            Assert.IsNotNull(_vessel.State.KeplerState.NextPeriapsisTick,
-                "NextPeriapsisTick should be populated for elliptical orbit");
-            Assert.IsNotNull(_vessel.State.KeplerState.NextApoapsisTick,
-                "NextApoapsisTick should be populated for elliptical orbit");
-            Assert.IsNotNull(_vessel.State.KeplerState.NextSoiTransitionTick,
-                "NextSoiTransitionTick should be populated when orbit crosses Earth's SOI");
-
-            // All three queue entries present.
-            Assert.AreEqual(3, controller.EventQueue.Count,
-                "Queue should have all three event-type entries for a crossing elliptical orbit");
-
-            // Counter semantics: both EvaluationCount and PredictionUpdateCount
-            // should equal 1 (one vessel examined, PredictAndUpdate completed).
-            Assert.AreEqual(1, VesselEventPredictionDriver.EvaluationCount);
-            Assert.AreEqual(1, VesselEventPredictionDriver.PredictionUpdateCount);
-        }
-
-        // ----- VesselEventPredictionDriver + AtmosphericEntry + SurfaceImpact (commit 047 Stage 2) -----
-
-        // Earth-scale surface + atmosphere values for the new tests. These override
-        // the SetUp's point-mass default (surfaceRadiusMeters = 1.0) via reflection.
-        private const double TestEarthSurfaceRadiusMeters = 6.371e6;
-        private const double TestEarthAtmosphericTopMeters = 1.0e5;  // 100 km
-
-        /// <summary>
-        /// Reflection helper: assign Earth-like surfaceRadiusMeters and
-        /// atmosphericTopAltitudeMeters to <see cref="_body"/>, then invoke
-        /// InitializeBodyForTesting. Used by Stage 2 atmospheric/surface tests
-        /// that need a body with a real surface and atmosphere.
-        /// </summary>
-        private void SetEarthSurfaceAtmosphereAndInitialize(
-            double surfaceRadius, double atmosphericTop)
-        {
-            // Named wrapper preserved (semantic anchor): the test reads as "this test
-            // wants Earth with surface + atmosphere" rather than as a generic init call.
-            _body.InitializeBodyForTesting(
-                massKg: EarthMassKg,
-                soiRadiusMeters: double.PositiveInfinity,
-                surfaceRadiusMeters: surfaceRadius,
-                atmosphericTopAltitudeMeters: atmosphericTop);
-        }
-
-        /// <summary>
-        /// Build a KeplerState whose orbit reaches into the atmosphere (periapsis
-        /// below atmospheric top, apoapsis well above). Vessel starts at apoapsis
-        /// so the predicted entry is in the future. e &lt; 0.8 by construction.
-        /// </summary>
-        private KeplerState NewAtmosphericCrossingState()
-        {
-            // rPeri inside atmosphere (above surface but below atmospheric top):
-            // 50 km above surface, atmospheric top at 100 km, so peri is 50 km
-            // inside atmosphere.
-            double rPeri = TestEarthSurfaceRadiusMeters + 5.0e4;
-            double rApo = 1.0e7;  // 10,000 km from body center — well above atmosphere
-            double a = 0.5 * (rPeri + rApo);
-            double e = (rApo - rPeri) / (rApo + rPeri);
-            // Sanity: e should be ~0.22, well under 0.8.
-            return new KeplerState
-            {
-                SemiMajorAxis = a,
-                Eccentricity = e,
-                Inclination = 0.0,
-                LongitudeOfAscendingNode = 0.0,
-                ArgumentOfPeriapsis = 0.0,
-                TrueAnomalyAtEpoch = math.PI_DBL,  // start at apoapsis, descending
-                EpochTick = 0,
-                ReferenceBodyId = _body != null ? _body.BodyId : Guid.Empty,
-            };
-        }
-
-        /// <summary>
-        /// Build a KeplerState whose orbit impacts the surface (periapsis below
-        /// surface). Vessel starts at apoapsis. e &lt; 0.8 by construction.
-        /// </summary>
-        private KeplerState NewSurfaceImpactState()
-        {
-            double rPeri = TestEarthSurfaceRadiusMeters - 1.0e5;  // 100 km below surface
-            double rApo = 1.0e7;
-            double a = 0.5 * (rPeri + rApo);
-            double e = (rApo - rPeri) / (rApo + rPeri);
-            return new KeplerState
-            {
-                SemiMajorAxis = a,
-                Eccentricity = e,
-                Inclination = 0.0,
-                LongitudeOfAscendingNode = 0.0,
-                ArgumentOfPeriapsis = 0.0,
-                TrueAnomalyAtEpoch = math.PI_DBL,  // start at apoapsis, descending
-                EpochTick = 0,
-                ReferenceBodyId = _body != null ? _body.BodyId : Guid.Empty,
-            };
-        }
-
-        [Test]
-        public void EventPredictionDriver_OnTickAdvanced_PopulatesNextModeTransitionTickFromAtmosphericEntry()
-        {
-            // Body with atmosphere but no orbit-impacts-surface. Vessel orbit reaches
-            // into atmosphere; predicted entry tick populates NextModeTransitionTick.
-            // (Surface impact predictor returns null here because rPeri > surface.)
-            SetUpEventPredictionDriver();
-            SetEarthSurfaceAtmosphereAndInitialize(
-                TestEarthSurfaceRadiusMeters, TestEarthAtmosphericTopMeters);
-
-            var kepler = NewAtmosphericCrossingState();
-            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
-
-            Assert.IsNull(_vessel.State.KeplerState.NextModeTransitionTick,
-                "Sanity: NextModeTransitionTick should be null before driver fires");
-
-            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
-
-            Assert.IsNotNull(_vessel.State.KeplerState.NextModeTransitionTick,
-                "NextModeTransitionTick should be populated when orbit reaches atmosphere");
-            Assert.Greater(_vessel.State.KeplerState.NextModeTransitionTick.Value, 0,
-                "Predicted mode-transition tick should be in the future");
-        }
-
-        [Test]
-        public void EventPredictionDriver_OnTickAdvanced_PopulatesNextModeTransitionTickFromSurfaceImpact()
-        {
-            // Body with NO atmosphere (vacuum) but vessel orbit impacts surface.
-            // SurfaceImpactPredictor populates NextModeTransitionTick;
-            // AtmosphericEntryPredictor returns null (vacuum body).
-            SetUpEventPredictionDriver();
-            SetEarthSurfaceAtmosphereAndInitialize(
-                TestEarthSurfaceRadiusMeters, atmosphericTop: 0.0);  // vacuum
-
-            var kepler = NewSurfaceImpactState();
-            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
-
-            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
-
-            Assert.IsNotNull(_vessel.State.KeplerState.NextModeTransitionTick,
-                "NextModeTransitionTick should be populated when orbit impacts surface");
-            Assert.Greater(_vessel.State.KeplerState.NextModeTransitionTick.Value, 0,
-                "Predicted mode-transition tick should be in the future");
-        }
-
-        [Test]
-        public void EventPredictionDriver_OnTickAdvanced_EarliestOfAtmosphericAndSurface_WinsInModeTransitionTick()
-        {
-            // Body has both atmosphere AND vessel orbit impacts surface. Vessel
-            // hits atmospheric boundary (threshold = SurfaceRadiusMeters + AtmoTop =
-            // 6.471e6) BEFORE surface (threshold = SurfaceRadiusMeters = 6.371e6),
-            // so atmospheric entry tick should be earlier than surface impact tick.
-            // NextModeTransitionTick = min(atmospheric, surface) = atmospheric tick.
-            SetUpEventPredictionDriver();
-            SetEarthSurfaceAtmosphereAndInitialize(
-                TestEarthSurfaceRadiusMeters, TestEarthAtmosphericTopMeters);
-
-            // Orbit with periapsis BELOW surface (impacts) — also passes through
-            // atmosphere on the way down.
-            var kepler = NewSurfaceImpactState();
-            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
-
-            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
-
-            // Verify NextModeTransitionTick is populated.
-            long? modeTick = _vessel.State.KeplerState.NextModeTransitionTick;
-            Assert.IsNotNull(modeTick,
-                "NextModeTransitionTick should be populated when both atmosphere and surface are reached");
-
-            // Compute atmospheric and surface predicted ticks independently for comparison.
-            long? atmoTick = AtmosphericEntryPredictor.PredictNextEntry(
-                kepler, _body, currentTick: 1, SimTickController.SimTickIntervalSeconds);
-            long? surfaceTick = SurfaceImpactPredictor.PredictNextImpact(
-                kepler, _body, currentTick: 1, SimTickController.SimTickIntervalSeconds);
-
-            Assert.IsTrue(atmoTick.HasValue, "Atmospheric entry should be predicted");
-            Assert.IsTrue(surfaceTick.HasValue, "Surface impact should be predicted");
-            Assert.Less(atmoTick.Value, surfaceTick.Value,
-                "Atmospheric entry (higher threshold radius) should fire before surface impact (lower)");
-
-            // The aggregated tick should equal the earlier of the two (the atmospheric tick).
-            Assert.AreEqual(atmoTick.Value, modeTick.Value,
-                "NextModeTransitionTick should equal min(atmosphericEntryTick, surfaceImpactTick)");
-        }
-
-        [Test]
-        public void EventPredictionDriver_OnTickAdvanced_UpdatesQueueWithAtmosphericEntryAndSurfaceImpact()
-        {
-            // Both atmosphere + surface-impact predictors populate their respective
-            // queue entries. With orbit crossing both thresholds: queue has
-            // Periapsis + Apoapsis + AtmosphericEntry + SurfaceImpact = 4 entries.
-            // (No SoiCrossing — default _body has infinite SOI; predictor returns null.)
-            var controller = SetUpEventPredictionDriver();
-            SetEarthSurfaceAtmosphereAndInitialize(
-                TestEarthSurfaceRadiusMeters, TestEarthAtmosphericTopMeters);
-
-            var kepler = NewSurfaceImpactState();
-            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
-
-            Assert.AreEqual(0, controller.EventQueue.Count,
-                "Sanity: queue empty before driver fires");
-
-            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
-
-            Assert.AreEqual(4, controller.EventQueue.Count,
-                "Queue should have Periapsis + Apoapsis + AtmosphericEntry + SurfaceImpact entries");
-        }
-
-        [Test]
-        public void EventPredictionDriver_OnTickAdvanced_NoAtmosphereOrImpactExpected_NextModeTransitionTickNull()
-        {
-            // High-altitude circular orbit (e=0.05, rPeri ≈ 6.65e6 above Earth-default
-            // surface 6.371e6) around vacuum body. Neither atmospheric entry nor
-            // surface impact applies. NextModeTransitionTick stays null; queue gets
-            // only Periapsis + Apoapsis.
-            var controller = SetUpEventPredictionDriver();
-            SetEarthSurfaceAtmosphereAndInitialize(
-                TestEarthSurfaceRadiusMeters, atmosphericTop: 0.0);  // vacuum
-
-            var kepler = NewKeplerState();
-            kepler.Eccentricity = 0.05;  // rPeri = 7e6 * 0.95 = 6.65e6 > 6.371e6 surface
-            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
-
-            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
-
-            Assert.IsNull(_vessel.State.KeplerState.NextModeTransitionTick,
-                "NextModeTransitionTick should be null when neither atmosphere nor surface is reached");
-
-            // Queue has only Periapsis + Apoapsis (no SoiCrossing because Earth has
-            // infinite SOI by default in this test, no AtmosphericEntry vacuum body,
-            // no SurfaceImpact orbit-above-surface).
-            Assert.AreEqual(2, controller.EventQueue.Count,
-                "Queue should contain only Periapsis + Apoapsis entries");
-        }
     }
 }
