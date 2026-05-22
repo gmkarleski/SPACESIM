@@ -6,6 +6,7 @@ using SpaceSim.Foundation.Vessels;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityObject = UnityEngine.Object;
+using static SpaceSim.Foundation.Vessels.Tests.PredictorTestState;
 
 namespace SpaceSim.Foundation.Vessels.Tests
 {
@@ -113,26 +114,10 @@ namespace SpaceSim.Foundation.Vessels.Tests
             return body;
         }
 
-        /// <summary>
-        /// Build a KeplerState from (a, e, ν₀) at epoch tick 0 with all other elements
-        /// zero (equatorial, ascending node at +X, periapsis at +X axis).
-        /// </summary>
-        private static KeplerState BuildState(
-            double semiMajorAxis, double eccentricity, double trueAnomalyAtEpoch,
-            Guid? referenceBodyId = null)
-        {
-            return new KeplerState
-            {
-                SemiMajorAxis = semiMajorAxis,
-                Eccentricity = eccentricity,
-                Inclination = 0.0,
-                LongitudeOfAscendingNode = 0.0,
-                ArgumentOfPeriapsis = 0.0,
-                TrueAnomalyAtEpoch = trueAnomalyAtEpoch,
-                EpochTick = 0,
-                ReferenceBodyId = referenceBodyId ?? Guid.NewGuid(),
-            };
-        }
+        // BuildState helper consolidated into PredictorTestState (imported via
+        // `using static` at top of file). The optional referenceBodyId param —
+        // which this file's original helper introduced for tests that wire a
+        // specific body's id — is preserved by the consolidated helper.
 
         // ----- Test 1: orbit contained, no children -----
 

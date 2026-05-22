@@ -6,6 +6,7 @@ using SpaceSim.Foundation.Vessels;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityObject = UnityEngine.Object;
+using static SpaceSim.Foundation.Vessels.Tests.PredictorTestState;
 
 namespace SpaceSim.Foundation.Vessels.Tests
 {
@@ -52,26 +53,9 @@ namespace SpaceSim.Foundation.Vessels.Tests
 
         // ----- Helpers -----
 
-        // Parameter names (semiMajorAxis, eccentricity, trueAnomalyAtEpoch) match the
-        // convention established in SoiCrossingPredictorTests and OrbitalElementsTests
-        // so cross-file named-argument call sites are consistent. Each test file owns
-        // its own BuildState helper (matching their local SetUp body wiring); the
-        // signature shape is shared across files.
-        private static KeplerState BuildState(
-            double semiMajorAxis, double eccentricity, double trueAnomalyAtEpoch)
-        {
-            return new KeplerState
-            {
-                SemiMajorAxis = semiMajorAxis,
-                Eccentricity = eccentricity,
-                Inclination = 0.0,
-                LongitudeOfAscendingNode = 0.0,
-                ArgumentOfPeriapsis = 0.0,
-                TrueAnomalyAtEpoch = trueAnomalyAtEpoch,
-                EpochTick = 0,
-                ReferenceBodyId = Guid.NewGuid(),
-            };
-        }
+        // BuildState helper consolidated into PredictorTestState (imported via
+        // `using static` at top of file). Call sites use the unqualified
+        // BuildState(...) name unchanged from the previous local-helper era.
 
         // ----- Tests -----
 
