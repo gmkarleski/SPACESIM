@@ -187,6 +187,99 @@ namespace SpaceSim.Foundation.SimTick.Tests
             Assert.AreEqual(5, _controller.ComputeAnalyticIterations(int.MaxValue, 100));
         }
 
+        // ----- Determinism: multi-call accumulation -----
+
+        [Test]
+        public void ComputeAnalyticIterations_AccumulatesDeterministically_AcrossManyCalls()
+        {
+            // 100 sequential calls at 100,000× (Cruise mode allows the full rate
+            // without ceiling clamping). The rational-rate / integer-arithmetic
+            // guarantee means total advancement is EXACTLY 100 × 100,000 = 10,000,000
+            // with no drift accumulated across calls.
+            _controller.SetActiveVesselMode(PhysicsMode.InterstellarCruise);
+            _controller.SetDiscreteLevel(100_000);
+
+            long total = 0;
+            for (int i = 0; i < 100; i++)
+            {
+                total += _controller.ComputeAnalyticIterations(int.MaxValue, total);
+            }
+
+            Assert.AreEqual(10_000_000L, total,
+                "100 calls at 100,000× should advance exactly 10,000,000 ticks with no drift.");
+        }
+
+        [Test]
+        public void ComputeAnalyticIterations_ModeSwitch_BetweenCalls_NoDrift()
+        {
+            // Three phases. Mode changes between phases don't reset the
+            // _pendingNumerator (SetActiveVesselMode doesn't touch the rational
+            // accumulator state) so this also verifies mode-switch atomicity.
+            //
+            // Phase 1: 10 calls at KeplerRails / 1000× → +10,000.
+            // Phase 2: 10 calls at PhysXActive  (effective drops to 5×) → +50.
+            // Phase 3: 10 calls at KeplerRails / 1000× → +10,000.
+            // Cumulative expected: 20,050.
+            _controller.SetActiveVesselMode(PhysicsMode.KeplerRails);
+            _controller.SetDiscreteLevel(1000);
+
+            long total = 0;
+            for (int i = 0; i < 10; i++)
+                total += _controller.ComputeAnalyticIterations(int.MaxValue, total);
+            Assert.AreEqual(10_000L, total,
+                "After 10 KeplerRails/1000× calls total should be 10,000.");
+
+            _controller.SetActiveVesselMode(PhysicsMode.PhysXActive);
+            for (int i = 0; i < 10; i++)
+                total += _controller.ComputeAnalyticIterations(int.MaxValue, total);
+            Assert.AreEqual(10_050L, total,
+                "After 10 PhysXActive-capped (5×) calls total should be 10,050.");
+
+            _controller.SetActiveVesselMode(PhysicsMode.KeplerRails);
+            for (int i = 0; i < 10; i++)
+                total += _controller.ComputeAnalyticIterations(int.MaxValue, total);
+            Assert.AreEqual(20_050L, total,
+                "After 10 more KeplerRails/1000× calls total should be 20,050.");
+        }
+
+        [Test]
+        public void ComputeAnalyticIterations_WhileHalting_ReturnsOne()
+        {
+            // Pre-halt sanity: KeplerRails @ 10000× returns the full 10,000.
+            _controller.SetActiveVesselMode(PhysicsMode.KeplerRails);
+            _controller.SetDiscreteLevel(10_000);
+            Assert.AreEqual(10_000, _controller.ComputeAnalyticIterations(int.MaxValue, 100),
+                "Pre-halt sanity: KeplerRails @ 10000× should return 10,000 iterations.");
+
+            // Register a halt; the "always at least 1" floor kicks in regardless
+            // of rate. Per WarpController.cs line 401 the impl returns 1, not 0;
+            // the user-facing "Paused" signal lives in the RateDisplay text, not
+            // in zero advancement (the cycle still runs its non-iterated steps).
+            _controller.RegisterHaltEvent(new WarpHaltInfo(
+                haltingVesselId: null,
+                haltReason: WarpHaltReason.Manual,
+                haltTick: 100L,
+                diagnosticMessage: "halt test"));
+
+            Assert.AreEqual(1, _controller.ComputeAnalyticIterations(int.MaxValue, 100),
+                "During halt the always-at-least-1 floor returns 1 regardless of rate.");
+        }
+
+        [Test]
+        public void ComputeAnalyticIterations_WhilePaused_ReturnsOne()
+        {
+            // Paused state hits the same "always at least 1" floor as halting
+            // (per WarpController.cs line 402). Dual-coded behavior; dual-tested.
+            _controller.SetActiveVesselMode(PhysicsMode.KeplerRails);
+            _controller.SetDiscreteLevel(10_000);
+            Assert.AreEqual(10_000, _controller.ComputeAnalyticIterations(int.MaxValue, 100),
+                "Pre-pause sanity: KeplerRails @ 10000× should return 10,000 iterations.");
+
+            _controller.Pause();
+            Assert.AreEqual(1, _controller.ComputeAnalyticIterations(int.MaxValue, 100),
+                "While paused the always-at-least-1 floor returns 1 regardless of rate.");
+        }
+
         // ----- Target tick -----
 
         [Test]
@@ -234,6 +327,33 @@ namespace SpaceSim.Foundation.SimTick.Tests
                 "Target-reached halts are non-vessel; HaltingVesselId should be null.");
         }
 
+        [Test]
+        public void SetTargetTick_AfterReached_NewTargetWorks()
+        {
+            _controller.SetActiveVesselMode(PhysicsMode.KeplerRails);
+
+            // First target: 100 → 5000. Reaching it should clear TargetTick and
+            // set IsHalting (verified by the StopsExactlyAtTarget test); we
+            // reproduce the arrival here to set up the post-arrival state.
+            _controller.SetTargetTick(tick: 5000, currentTickFromController: 100);
+            _controller.ComputeAnalyticIterations(int.MaxValue, 100);
+            Assert.IsNull(_controller.TargetTick, "First target should clear after landing.");
+            Assert.IsTrue(_controller.IsHalting, "First target arrival should set IsHalting.");
+
+            // Player acknowledges via ClearHalt; controller is ready for a new target.
+            _controller.ClearHalt();
+            Assert.IsFalse(_controller.IsHalting, "ClearHalt should reset halting.");
+
+            // Second target latches and reaches just like the first.
+            _controller.SetTargetTick(tick: 8000, currentTickFromController: 5000);
+            Assert.AreEqual(8000L, _controller.TargetTick,
+                "Second target should latch after the first cleared.");
+
+            _controller.ComputeAnalyticIterations(int.MaxValue, 5000);
+            Assert.IsNull(_controller.TargetTick, "Second target should clear after landing.");
+            Assert.IsTrue(_controller.IsHalting, "Second target arrival should set IsHalting.");
+        }
+
         // ----- Pause / Resume -----
 
         [Test]
@@ -276,6 +396,25 @@ namespace SpaceSim.Foundation.SimTick.Tests
             _controller.Pause();
             _controller.Resume();
             Assert.AreEqual(WarpRate.OneX, _controller.CurrentRate);
+        }
+
+        [Test]
+        public void Resume_WithoutPriorPause_IsNoOp()
+        {
+            _controller.SetActiveVesselMode(PhysicsMode.KeplerRails);
+            _controller.SetContinuousRate(500);
+            int eventFireCount = 0;
+            _controller.OnRateChanged += _ => eventFireCount++;
+
+            // Resume without ever calling Pause. The impl early-returns when
+            // _currentRate.IsPaused is false (lines 318-330 of WarpController.cs),
+            // so this is a defensive no-op: rate unchanged, no event fires.
+            _controller.Resume();
+
+            Assert.AreEqual(new WarpRate(500, 1), _controller.CurrentRate,
+                "Resume without prior Pause should leave CurrentRate untouched.");
+            Assert.AreEqual(0, eventFireCount,
+                "Resume without prior Pause should not fire OnRateChanged.");
         }
 
         // ----- Halt registration -----
@@ -325,6 +464,31 @@ namespace SpaceSim.Foundation.SimTick.Tests
             Assert.IsFalse(_controller.IsHalting);
             Assert.IsTrue(_controller.LastHaltInfo.HasValue,
                 "ClearHalt should preserve LastHaltInfo for UI display after acknowledgement.");
+        }
+
+        [Test]
+        public void ClearHalt_ResumesAdvancement_AtCurrentRate()
+        {
+            // Pre-halt sanity: KeplerRails @ 100× returns 100 iterations.
+            _controller.SetActiveVesselMode(PhysicsMode.KeplerRails);
+            _controller.SetDiscreteLevel(100);
+            Assert.AreEqual(100, _controller.ComputeAnalyticIterations(int.MaxValue, 100),
+                "Pre-halt sanity: KeplerRails @ 100× should return 100 iterations.");
+
+            // Halt: the always-at-least-1 floor reduces advancement to 1
+            // (covered in detail by _WhileHalting_ReturnsOne).
+            _controller.RegisterHaltEvent(new WarpHaltInfo(
+                haltingVesselId: null,
+                haltReason: WarpHaltReason.Manual,
+                haltTick: 100L,
+                diagnosticMessage: "halt test"));
+            Assert.AreEqual(1, _controller.ComputeAnalyticIterations(int.MaxValue, 100),
+                "Sanity: halting yields floor of 1.");
+
+            // ClearHalt should restore normal advancement to the current effective rate.
+            _controller.ClearHalt();
+            Assert.AreEqual(100, _controller.ComputeAnalyticIterations(int.MaxValue, 100),
+                "After ClearHalt advancement should return to the current effective rate (100×).");
         }
     }
 }
