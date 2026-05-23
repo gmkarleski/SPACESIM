@@ -275,9 +275,10 @@ namespace SpaceSim.Foundation.Vessels.Tests
         /// fields null. Fields are populated by
         /// <see cref="VesselEventPredictionDriver"/> on the next sim-tick after the
         /// vessel is in KeplerRails mode (NextPeriapsisTick + NextApoapsisTick land
-        /// at commit 045; NextSoiTransitionTick + NextModeTransitionTick land at
-        /// later commits in the predictor sequence). At construction time — the
-        /// moment this test exercises — all four are null.
+        /// at commit 045; NextSoiTransitionTick lands at commit 046;
+        /// NextAtmosphericEntryTick + NextSurfaceImpactTick land at commit 047 /
+        /// split into distinct fields at commit 048 Stage 1). At construction
+        /// time — the moment this test exercises — all five are null.
         ///
         /// Renamed at commit 045 Stage 3 from "AreNull" to
         /// "AreNullAtConstruction" to make the timing explicit.
@@ -296,7 +297,8 @@ namespace SpaceSim.Foundation.Vessels.Tests
                 "Construction returns null; populated on next TickAdvanced by event predictor (commit 045+)");
             Assert.IsNull(state.NextApoapsisTick);
             Assert.IsNull(state.NextSoiTransitionTick);
-            Assert.IsNull(state.NextModeTransitionTick);
+            Assert.IsNull(state.NextAtmosphericEntryTick);
+            Assert.IsNull(state.NextSurfaceImpactTick);
         }
 
         // ----- ReRootStateVector (commit 044 Stage 2) -----

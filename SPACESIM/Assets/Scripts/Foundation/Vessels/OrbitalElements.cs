@@ -213,7 +213,8 @@ namespace SpaceSim.Foundation.Vessels
                 NextPeriapsisTick = null,
                 NextApoapsisTick = null,
                 NextSoiTransitionTick = null,
-                NextModeTransitionTick = null,
+                NextAtmosphericEntryTick = null,
+                NextSurfaceImpactTick = null,
             };
         }
 

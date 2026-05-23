@@ -681,27 +681,32 @@ namespace SpaceSim.Foundation.Vessels.Tests
         public void TransitionToPhysXActive_AtmosphericEntryPredicted_Succeeds()
         {
             // §3.1 trigger: "The vessel's trajectory predicts atmospheric entry
-            // within the next sim-tick (the pre-computed next_mode_transition_tick
+            // within the next sim-tick (the pre-computed next_atmospheric_entry_tick
             // fires)."
             //
-            // PHASE 0 NOTE: §3.1 condition for atmospheric-entry prediction cannot
-            // be fully exercised in Phase 0 because the underlying state field
-            // (KeplerState.NextModeTransitionTick) is populated to null per the
-            // Phase 0 scope comment in KeplerState.cs:79-82. This test verifies
-            // the transition procedure succeeds under the geometric/kinematic
-            // conditions we CAN construct. Trigger evaluation per §3.1 lands in
-            // Phase 1.
+            // PHASE 0 / TEST-CONSTRUCTION NOTE: §3.1 condition for atmospheric-entry
+            // prediction cannot be fully exercised by this test because the body in
+            // SetUp uses the surfaceRadiusMeters=1.0 point-mass convention with no
+            // atmosphere configured; the atmospheric-entry predictor returns null on
+            // this body. This test verifies the transition procedure succeeds under
+            // the geometric/kinematic conditions we CAN construct. Real driver-fired
+            // trigger evaluation is covered separately by
+            // EvaluateTransitionTriggers_KeplerRails_AtmosphericEntryPredicted_SuggestsPhysXActive
+            // (which writes NextAtmosphericEntryTick directly).
             _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
             _vessel.Rigidbody.position = new Vector3((float)LeoRadius, 0f, 0f);
             float vCircular = (float)math.sqrt(EarthMu / LeoRadius);
             _vessel.Rigidbody.linearVelocity = new Vector3(0f, vCircular, 0f);
             _vessel.TransitionToKeplerRails();
 
-            // Confirm the Phase 0 invariant — NextModeTransitionTick stays null —
-            // as a sanity check that this test's "trigger condition" cannot
-            // actually fire in the current code.
-            Assert.IsNull(_vessel.State.KeplerState.NextModeTransitionTick,
-                "Phase 0 scope: NextModeTransitionTick should be null until trigger evaluator lands");
+            // Confirm the test-construction invariant — both new mode-transition
+            // fields stay null (commit 048 Stage 1 field-split) — as a sanity check
+            // that this test's "trigger condition" cannot actually fire in the
+            // current body setup.
+            Assert.IsNull(_vessel.State.KeplerState.NextAtmosphericEntryTick,
+                "Test setup: NextAtmosphericEntryTick should be null on point-mass body");
+            Assert.IsNull(_vessel.State.KeplerState.NextSurfaceImpactTick,
+                "Test setup: NextSurfaceImpactTick should be null on surfaceRadius=1.0 body");
 
             _vessel.TransitionToPhysXActive();
 
@@ -1295,18 +1300,23 @@ namespace SpaceSim.Foundation.Vessels.Tests
         [Test]
         public void EvaluateTransitionTriggers_KeplerRails_AtmosphericEntryPredicted_SuggestsPhysXActive()
         {
-            // KeplerRails vessel beyond proximity but with NextModeTransitionTick set
+            // KeplerRails vessel beyond proximity but with NextAtmosphericEntryTick set
             // to current+1 (atmospheric entry imminent). Fires AtmosphericEntryPredicted.
             //
             // Uses SimTickController.SetInstanceForTesting + SetTickNumberForTesting from
             // commit 040 to control "current tick" deterministically.
+            //
+            // Field write target updated commit 048 Stage 1 from the (now-removed)
+            // aggregated NextModeTransitionTick to the dedicated
+            // NextAtmosphericEntryTick — test name and asserted trigger reason stay
+            // atmospheric-specific, matching the new per-field firing distinction.
             _simTickGo = new GameObject("TestSimTick");
             var controller = _simTickGo.AddComponent<SimTickController>();
             SimTickController.SetInstanceForTesting(controller);
             controller.SetTickNumberForTesting(100);
 
             var kepler = NewKeplerState(_body);
-            kepler.NextModeTransitionTick = 101;  // current (100) + 1
+            kepler.NextAtmosphericEntryTick = 101;  // current (100) + 1
             _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
 
             // Active reference at origin → vessel propagated position at (LeoRadius, 0, 0)

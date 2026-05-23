@@ -71,7 +71,35 @@ namespace SpaceSim.Foundation.Vessels
         /// </summary>
         public string DiagnosticName => gameObject != null ? gameObject.name : "(null)";
 
+        /// <summary>
+        /// Whether this vessel is classified as routine supply (commit 048 Stage 1).
+        /// Routine-supply vessels do NOT halt time-warp on SOI crossings or
+        /// atmospheric entry events — both are expected, repetitive, and
+        /// non-terminal for the supply mission profile. Routine vessels DO still
+        /// halt time-warp on terminal / mass-affecting events: surface impact
+        /// (vessel destruction), maneuver execution (burn timing matters), and
+        /// other events whose outcome the player needs to see.
+        ///
+        /// <para>
+        /// Defaults to <c>false</c> — regular vessels halt on all flagged events.
+        /// The flag is set in the Inspector or programmatically when a vessel is
+        /// designated as a supply-route automation; vessels switch in and out of
+        /// routine classification across their lifetime (a fresh design's first
+        /// flight is non-routine; once validated as a supply route, the same
+        /// design's subsequent vessels are routine).
+        /// </para>
+        ///
+        /// <para>
+        /// Wired into the time-warp halt logic in Stage 3 of commit 048. The field
+        /// is added in Stage 1 so the schema is in place ahead of the controller
+        /// integration.
+        /// </para>
+        /// </summary>
+        public bool IsRoutineSupply { get => isRoutineSupply; set => isRoutineSupply = value; }
+
         // ----- Internal state -----
+
+        [SerializeField] private bool isRoutineSupply;
 
         private Rigidbody _rb;
         private FloatingOriginAnchor _anchor;
@@ -735,19 +763,20 @@ namespace SpaceSim.Foundation.Vessels
         /// </para>
         ///
         /// <para>
-        /// <see cref="PhysicsMode.KeplerRails"/> mode evaluates the 5-condition OR
+        /// <see cref="PhysicsMode.KeplerRails"/> mode evaluates the 6-condition OR
         /// disjunction in declared order (first match wins): proximity, predicted
-        /// mode transition (atmospheric entry / surface impact / future scheduled-burn
-        /// / future interstellar-arrival — aggregated into
-        /// <see cref="KeplerState.NextModeTransitionTick"/> via the event-prediction
-        /// driver), player focus, scripted thrust, multi-vessel cluster. If any
-        /// fires, suggests <see cref="PhysicsMode.PhysXActive"/> with the matching
-        /// reason. As of commit 047, the trigger reason
-        /// <see cref="TransitionTriggerReason.AtmosphericEntryPredicted"/> fires for
-        /// any populated mode-transition tick — atmospheric entry OR surface impact
-        /// — because the underlying field is N-way aggregated; the trigger reason
-        /// label keeps its historical name and rename is deferred to a separate
-        /// cleanup commit.
+        /// atmospheric entry, predicted surface impact, player focus, scripted
+        /// thrust, multi-vessel cluster. If any fires, suggests
+        /// <see cref="PhysicsMode.PhysXActive"/> with the matching reason. As of
+        /// commit 048 the atmospheric-entry and surface-impact triggers fire
+        /// distinct reasons
+        /// (<see cref="TransitionTriggerReason.AtmosphericEntryPredicted"/> and
+        /// <see cref="TransitionTriggerReason.SurfaceImpactPredicted"/>), reading
+        /// the two separate <see cref="KeplerState"/> fields
+        /// (<see cref="KeplerState.NextAtmosphericEntryTick"/> and
+        /// <see cref="KeplerState.NextSurfaceImpactTick"/>). The label imprecision
+        /// that existed from commit 047's aggregated <c>NextModeTransitionTick</c>
+        /// is now resolved at runtime.
         /// </para>
         ///
         /// <para>
@@ -761,10 +790,10 @@ namespace SpaceSim.Foundation.Vessels
         /// PHASE 0 / PHASE 1 NOTE: many condition implementations are stubs whose
         /// behavior always passes (no thrust, no atmospheric drag from PhysX-state,
         /// no contact, no focus, no clustering). Proximity has a real implementation
-        /// since Phase 0. As of commit 047, mode-transition prediction
-        /// (<c>IsAtmosphericEntryPredicted</c>) also has a real implementation —
-        /// <see cref="KeplerState.NextModeTransitionTick"/> is populated by
-        /// <see cref="VesselEventPredictionDriver"/>. See each <c>Has*</c> /
+        /// since Phase 0. As of commit 047, mode-transition prediction has a real
+        /// implementation — see <see cref="VesselEventPredictionDriver"/>. As of
+        /// commit 048 atmospheric-entry and surface-impact prediction reads land in
+        /// distinct fields and fire distinct trigger reasons. See each <c>Has*</c> /
         /// <c>Is*</c> helper for its individual stub status.
         /// </summary>
         /// <param name="activeVesselForProximity">
@@ -842,7 +871,18 @@ namespace SpaceSim.Foundation.Vessels
                     TransitionTriggerReason.AtmosphericEntryPredicted);
             }
 
-            // §3.1 trigger 3: player focus switch.
+            // §3.1 trigger 3 (commit 048 — split from atmospheric-entry): predicted
+            // surface impact within next sim-tick. Distinct from atmospheric entry
+            // for routine-supply policy: routine-supply vessels skip atmospheric
+            // halts but still halt on surface impact (mass loss is terminal).
+            if (IsSurfaceImpactPredicted())
+            {
+                return TransitionEvaluation.Transition(
+                    PhysicsMode.PhysXActive,
+                    TransitionTriggerReason.SurfaceImpactPredicted);
+            }
+
+            // §3.1 trigger 4 (was trigger 3 pre-commit-048 split): player focus switch.
             if (HasPlayerFocusSwitch())
             {
                 return TransitionEvaluation.Transition(
@@ -850,7 +890,7 @@ namespace SpaceSim.Foundation.Vessels
                     TransitionTriggerReason.PlayerFocusSwitch);
             }
 
-            // §3.1 trigger 4: scripted mode change (Vizzy).
+            // §3.1 trigger 5 (was trigger 4 pre-commit-048 split): scripted mode change (Vizzy).
             if (HasScriptedThrust())
             {
                 return TransitionEvaluation.Transition(
@@ -858,7 +898,7 @@ namespace SpaceSim.Foundation.Vessels
                     TransitionTriggerReason.ScriptedThrust);
             }
 
-            // §3.1 trigger 5: multi-vessel proximity cluster.
+            // §3.1 trigger 6 (was trigger 5 pre-commit-048 split): multi-vessel proximity cluster.
             if (HasMultiVesselProximityCluster())
             {
                 return TransitionEvaluation.Transition(
@@ -992,24 +1032,48 @@ namespace SpaceSim.Foundation.Vessels
         }
 
         /// <summary>
-        /// §3.1 trigger: predicted imminent mode transition within the next sim-tick.
-        /// Reads <see cref="KeplerState.NextModeTransitionTick"/>; if set and within
-        /// one tick of the current sim-tick, a mode transition is imminent.
+        /// §3.1 trigger: predicted atmospheric entry within the next sim-tick.
+        /// Reads <see cref="KeplerState.NextAtmosphericEntryTick"/>; if set and
+        /// within one tick of the current sim-tick, atmospheric entry is imminent.
         ///
-        /// As of commit 047, <see cref="KeplerState.NextModeTransitionTick"/> is
-        /// populated by <see cref="VesselEventPredictionDriver"/> as the earliest of
-        /// atmospheric-entry and surface-impact predictions. This method name
-        /// retains the "AtmosphericEntry" framing for historical / API-stability
-        /// reasons, but the underlying predicate fires for any populated
-        /// mode-transition tick — including surface impact on a vacuum body. The
-        /// label imprecision (and the matching
-        /// <see cref="TransitionTriggerReason.AtmosphericEntryPredicted"/> enum
-        /// value) is a known cosmetic concern deferred to a separate cleanup commit.
+        /// <para>
+        /// AS OF COMMIT 048: this helper is atmospheric-only. Surface impact has its
+        /// own helper (<see cref="IsSurfaceImpactPredicted"/>) reading the
+        /// distinct <see cref="KeplerState.NextSurfaceImpactTick"/> field. The two
+        /// fire distinct <see cref="TransitionTriggerReason"/> values, resolving the
+        /// label imprecision that existed under commit 047's aggregation.
+        /// </para>
         /// </summary>
         private bool IsAtmosphericEntryPredicted()
         {
             if (State.KeplerState == null) return false;
-            long? predicted = State.KeplerState.NextModeTransitionTick;
+            long? predicted = State.KeplerState.NextAtmosphericEntryTick;
+            if (!predicted.HasValue) return false;
+
+            long currentTick = SimTickController.Instance != null
+                ? SimTickController.Instance.TickNumber
+                : State.KeplerState.EpochTick;
+            return predicted.Value <= currentTick + 1;
+        }
+
+        /// <summary>
+        /// §3.1 trigger: predicted surface impact within the next sim-tick.
+        /// Reads <see cref="KeplerState.NextSurfaceImpactTick"/>; if set and within
+        /// one tick of the current sim-tick, surface impact is imminent.
+        ///
+        /// <para>
+        /// ADDED COMMIT 048: parallel to <see cref="IsAtmosphericEntryPredicted"/>
+        /// but reads the distinct surface-impact field. The two helpers have
+        /// identical structure; the duplication is intentional — extracting the
+        /// shared window-check pattern into a parameterized helper would lose the
+        /// self-documenting call-site clarity of "is X predicted" matching the
+        /// trigger reason X fires.
+        /// </para>
+        /// </summary>
+        private bool IsSurfaceImpactPredicted()
+        {
+            if (State.KeplerState == null) return false;
+            long? predicted = State.KeplerState.NextSurfaceImpactTick;
             if (!predicted.HasValue) return false;
 
             long currentTick = SimTickController.Instance != null

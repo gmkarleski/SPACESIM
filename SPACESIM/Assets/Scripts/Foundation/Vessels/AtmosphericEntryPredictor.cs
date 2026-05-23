@@ -53,11 +53,15 @@ namespace SpaceSim.Foundation.Vessels
     /// commitment is satisfied automatically — the closed-form returns the exact tick
     /// when a crossing exists; there are no near-tangent grazes to miss.
     ///
-    /// <para>POPULATES <see cref="KeplerState.NextModeTransitionTick"/>:</para>
-    /// The driver aggregates this predictor's output with the surface-impact predictor's
-    /// output via min-of-both. The combined earliest tick is written to
-    /// <see cref="KeplerState.NextModeTransitionTick"/>; the trigger evaluator
-    /// (commit 043) reads that field to detect imminent K→P transitions.
+    /// <para>POPULATES <see cref="KeplerState.NextAtmosphericEntryTick"/>:</para>
+    /// As of commit 048 Stage 1, this predictor writes to its own dedicated field
+    /// (<see cref="KeplerState.NextAtmosphericEntryTick"/>) rather than being
+    /// aggregated with the surface-impact predictor's output into a shared
+    /// <c>NextModeTransitionTick</c>. The trigger evaluator on the vessel side
+    /// reads this field independently and fires
+    /// <see cref="TransitionTriggerReason.AtmosphericEntryPredicted"/> when the
+    /// predicted tick is within one of the current sim-tick. Surface impact has
+    /// its own dedicated field and trigger reason.
     /// </summary>
     public static class AtmosphericEntryPredictor
     {

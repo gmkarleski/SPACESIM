@@ -47,16 +47,17 @@ namespace SpaceSim.Foundation.Vessels
     /// "aggressively detects surface impact" commitment is satisfied automatically —
     /// the closed-form is exact for the constant-body case.
     ///
-    /// <para>POPULATES <see cref="KeplerState.NextModeTransitionTick"/>:</para>
-    /// The driver aggregates this predictor's output with the atmospheric-entry
-    /// predictor's output via min-of-both. The combined earliest tick is written to
-    /// <see cref="KeplerState.NextModeTransitionTick"/>; the trigger evaluator
-    /// (commit 043) reads that field to detect imminent K→P transitions. Both
-    /// predictors writing to the same field means the trigger fires for whichever
-    /// event arrives first — usually atmospheric entry (higher threshold) before
-    /// surface impact (lower threshold), but the predictor doesn't enforce ordering
-    /// — both ticks are computed independently and the aggregation is purely on the
-    /// values.
+    /// <para>POPULATES <see cref="KeplerState.NextSurfaceImpactTick"/>:</para>
+    /// As of commit 048 Stage 1, this predictor writes to its own dedicated field
+    /// (<see cref="KeplerState.NextSurfaceImpactTick"/>) rather than being
+    /// aggregated with the atmospheric-entry predictor's output into a shared
+    /// <c>NextModeTransitionTick</c>. The trigger evaluator on the vessel side
+    /// reads this field independently and fires
+    /// <see cref="TransitionTriggerReason.SurfaceImpactPredicted"/> when the
+    /// predicted tick is within one of the current sim-tick. The two predictors
+    /// no longer compete for a single field; each populates its own and the
+    /// trigger evaluator distinguishes the events at runtime, fixing the label
+    /// imprecision that existed under commit 047's aggregation.
     /// </summary>
     public static class SurfaceImpactPredictor
     {

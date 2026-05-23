@@ -88,7 +88,9 @@ namespace SpaceSim.Foundation.Vessels
         /// <see cref="SpaceSim.Foundation.Vessels.SurfaceImpactPredictor"/> uses this
         /// (commit 047) to predict the sim-tick at which a vessel's orbit would
         /// intersect the body's surface — i.e., lithobraking — and populate the
-        /// vessel's <see cref="KeplerState.NextModeTransitionTick"/>.
+        /// vessel's <see cref="KeplerState.NextSurfaceImpactTick"/> (commit 048
+        /// Stage 1; previously the predictor populated the now-removed aggregated
+        /// <c>NextModeTransitionTick</c> field).
         ///
         /// PHASE 1 SCOPE (commit 047): hand-set per body via the Inspector. Default
         /// 6.371e6 (Earth-equivalent at 1/1 scale; at the CONSTRAINTS §2 default 1/8
@@ -111,7 +113,9 @@ namespace SpaceSim.Foundation.Vessels
         /// meters. The <see cref="SpaceSim.Foundation.Vessels.AtmosphericEntryPredictor"/>
         /// uses this (commit 047) to predict the sim-tick at which a vessel's orbit
         /// crosses the atmospheric boundary inbound — i.e., re-entry — and populate
-        /// the vessel's <see cref="KeplerState.NextModeTransitionTick"/>.
+        /// the vessel's <see cref="KeplerState.NextAtmosphericEntryTick"/> (commit
+        /// 048 Stage 1; previously the predictor populated the now-removed
+        /// aggregated <c>NextModeTransitionTick</c> field).
         ///
         /// A value of 0.0 indicates a vacuum body (no atmosphere). The atmospheric
         /// predictor returns null on vacuum bodies; no atmospheric-entry event is

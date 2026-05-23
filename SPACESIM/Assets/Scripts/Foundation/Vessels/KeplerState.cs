@@ -80,25 +80,46 @@ namespace SpaceSim.Foundation.Vessels
         public long? NextSoiTransitionTick;
 
         /// <summary>
-        /// Pre-computed sim-tick at which the vessel will need to re-activate to
-        /// PhysX-active mode. Populated by
-        /// <see cref="VesselEventPredictionDriver"/> as the earliest of atmospheric
-        /// entry (via <see cref="AtmosphericEntryPredictor"/>) and surface impact
-        /// (via <see cref="SurfaceImpactPredictor"/>), aggregated via
-        /// <c>MinNullable</c> (commit 047). Predicted at each sim-tick for
-        /// KeplerRails vessels with non-null KeplerState.
+        /// Pre-computed sim-tick at which the vessel's trajectory enters the
+        /// atmospheric boundary of the current reference body. Populated by
+        /// <see cref="VesselEventPredictionDriver"/> via
+        /// <see cref="AtmosphericEntryPredictor"/> (commit 048 field split). Predicted
+        /// at each sim-tick for KeplerRails vessels with non-null KeplerState.
         ///
-        /// Null when neither predictor returns a future tick — typically because the
-        /// body is vacuum (atmospheric-top altitude = 0) AND the orbit doesn't
-        /// intersect the surface, or because the orbit is fully above the
-        /// atmospheric boundary with periapsis above the surface, or because the
-        /// overflow defense kicked in for very-long-period configurations.
+        /// Null when the body is a vacuum body (atmospheric-top altitude = 0), when
+        /// the orbit is fully above the atmospheric boundary, or when the overflow
+        /// defense kicked in for very-long-period configurations.
         ///
-        /// Future commits adding scheduled-burn and interstellar-arrival predictors
-        /// will extend the aggregation to N-way (still via min) without schema
-        /// change. See netcode contract §2.3 "Mode-transition aggregation" for the
-        /// full semantics.
+        /// <para>
+        /// As of commit 048, atmospheric entry and surface impact each get their own
+        /// dedicated field rather than being aggregated into a single
+        /// <c>NextModeTransitionTick</c>. This lets the trigger evaluator distinguish
+        /// the two events at runtime and fire the correct
+        /// <see cref="TransitionTriggerReason"/> value, eliminating the label
+        /// imprecision that commit 047's aggregation introduced.
+        /// </para>
         /// </summary>
-        public long? NextModeTransitionTick;
+        public long? NextAtmosphericEntryTick;
+
+        /// <summary>
+        /// Pre-computed sim-tick at which the vessel's trajectory intersects the
+        /// surface of the current reference body. Populated by
+        /// <see cref="VesselEventPredictionDriver"/> via
+        /// <see cref="SurfaceImpactPredictor"/> (commit 048 field split). Predicted at
+        /// each sim-tick for KeplerRails vessels with non-null KeplerState.
+        ///
+        /// Null when the orbit does not intersect the body's surface (periapsis above
+        /// surface radius), or when the overflow defense kicked in for very-long-period
+        /// configurations.
+        ///
+        /// <para>
+        /// Companion field to <see cref="NextAtmosphericEntryTick"/>. The two were
+        /// previously aggregated into a single <c>NextModeTransitionTick</c> field;
+        /// the split lets the trigger evaluator fire
+        /// <see cref="TransitionTriggerReason.SurfaceImpactPredicted"/> distinctly
+        /// from <see cref="TransitionTriggerReason.AtmosphericEntryPredicted"/>.
+        /// </para>
+        /// </summary>
+        public long? NextSurfaceImpactTick;
     }
 }

@@ -421,6 +421,35 @@ The format is intentionally informal — this is internal project memory, not a 
 
 ---
 
+### Time-warp controller architecture (commit 048)
+
+**Date:** 2026-05-22 (commit 048 Stage 1 schema + infrastructure; Stages 2-5 wire behavior)
+**Question:** How is the time-warp controller built? Specifically: rate representation (float vs rational); halt surfacing (direct controller→UI vs event bus); PhysX threshold for forced KeplerRails transition; routing for forced transitions (driver vs direct call); routine-supply classification representation; and field schema for atmospheric-entry / surface-impact distinct trigger reasons.
+**Decision:** Multi-part design landing in Stage 1 (schema + infrastructure) with behavior in Stages 2-5:
+- **(a) Rational warp-rate representation.** `WarpRate` is a `readonly struct` with `(long Numerator, long Denominator)` and helper factories `Paused` / `OneX` / `Discrete(level)` / `Continuous(integerRate)`. Discrete levels are {1, 5, 10, 100, 1000, 10000, 100000}; continuous integer rates are [1, 1000]. Denominator validated positive at construction. Internal `AdvanceTicks(realTimeTicks, pendingNumerator)` helper carries fractional-tick remainder forward for future fractional-rate modes; in v1 denominator is always 1, so `pendingNumerator` stays zero.
+- **(b) Event-bus halt surfacing.** `WarpController` exposes `Action<WarpHaltInfo>` for halt events. UI elements subscribe independently (Mission Control, warp-rate HUD, audio cues). Matches the existing `SimTickController.TickAdvanced` pattern.
+- **(c) PhysX threshold at 5x.** Warp rates above 5x while a vessel is `PhysXActive` trigger a forced transition to `KeplerRails`. The 5x number matches KSP-tested behavior — empirically the point where PhysX accuracy degrades enough to produce unphysical results.
+- **(d) Forced transitions flow through `VesselTransitionDriver` via a new `TransitionTriggerReason.WarpRateForcedRails` enum value.** The time-warp controller does NOT call `Vessel.TransitionToKeplerRails` directly. Preserves the architectural pattern that all mode changes flow through the driver.
+- **(e) `IsRoutineSupply` as a single boolean on `Vessel`.** Routine vessels skip warp halts on SOI crossings and atmospheric entry events (expected, repetitive, non-terminal); they still halt on surface impact (mass loss), maneuver execution, and other terminal events. Field default false. Inspector-visible.
+- **(f) `NextModeTransitionTick` split into per-event-type fields.** Atmospheric entry and surface impact each get a dedicated `KeplerState` field (`NextAtmosphericEntryTick` and `NextSurfaceImpactTick`). The trigger evaluator reads both fields independently and fires distinct `TransitionTriggerReason` values (`AtmosphericEntryPredicted` for atmospheric, `SurfaceImpactPredicted` for surface). Resolves the label imprecision that existed from commit 047 onward.
+
+**Alternatives rejected:**
+- **Float warp multipliers:** precision drift over long warp sessions. A 10,000x rate held for hours accumulates sim-tick advancement errors that compound.
+- **Per-vessel warp rates:** scope explosion (every vessel needs its own warp state); unclear UX (what does "warp on this vessel" mean when the player isn't looking at it?). v1 has one global warp rate.
+- **Aggressive floating-origin rebasing during warp:** no precision benefit at double-precision authoritative state. The current lazy rebasing remains correct under any warp rate.
+- **Tenths or finer continuous modes:** deferred to v2 if players ask. The rational `WarpRate` infrastructure supports them without schema change; v1 ships integer-only.
+- **Direct `Vessel.TransitionToKeplerRails` calls from `WarpController`:** would bypass the driver pattern. Rejected to preserve architectural consistency — the driver is the single dispatch point for all mode changes.
+- **Keeping `NextModeTransitionTick` as a computed aggregate property after the field split:** rejected because the prior aggregation was the source of the label imprecision being fixed. A computed-aggregate property would re-introduce the question "which event does this tick refer to?" at every reader. The single production reader split cleanly into two readers (`IsAtmosphericEntryPredicted` and `IsSurfaceImpactPredicted`); no remaining reader benefits from the aggregated view.
+- **Splitting `AtmosphericEntryPredicted` into two enum values with the field still aggregated:** rejected because the trigger evaluator can't determine which event the aggregated tick referred to. Half-resolving the label imprecision would leave the structural problem in place.
+
+**Rationale (single coherent schema-version bump + clean separation of concerns):** Stage 1 lands all the schema and infrastructure changes as one schema-version-incompatible bump, so the save format gets one migration step rather than a chain. Rational rate representation isolates the precision concern at the type level; event-bus halt surfacing isolates the UI-coupling concern; forced transitions via driver preserve the architectural mode-change discipline; the field split eliminates the label imprecision at the source rather than papering over it. Each piece composes cleanly with the others — none of them constrains the design of any other.
+
+**Implication:** Stage 2 wires `WarpController` into `SimTickController.RunFixedUpdateCycle` for actual time-warp advancement gating. Stage 3 wires the routine-supply policy and the forced-rails-at-5x driver hook. Stage 4 adds the UI (rate selector + halt notifications). Stage 5 adds the test suite. Save-file migration logic for the field split lands when save/load module begins (Phase 1 deferred per `Pending decisions` below); pre-commit-048 save files using `next_mode_transition_tick` will be migrated by dropping the value (the predictors re-populate on the next tick post-load).
+
+**Locked in:** commit 048 Stage 1 (schema + infrastructure); Stages 2-5 wire behavior in subsequent commits.
+
+---
+
 ## Pending decisions (open questions still in `docs/CONSTRAINTS.md` §10)
 
 This section mirrors §10's open questions so a reader can find both resolved and pending decisions in one place. When an entry here lands a decision, it moves to "Resolved decisions" above and gets removed from this section.

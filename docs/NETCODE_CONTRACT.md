@@ -112,6 +112,15 @@ VesselAuthoritativeState {
     // Crew assignment (vessel-physical, per commit 013)
     crew_aboard: List<CrewID>             // Named crew currently on this vessel
     
+    // Routine-supply classification (commit 048 Stage 1)
+    is_routine_supply: bool               // Whether this vessel is classified as routine supply.
+                                          // Routine vessels don't halt time-warp on SOI crossings or
+                                          // atmospheric entry events (both are expected and
+                                          // non-terminal for the supply profile). Routine vessels
+                                          // DO halt time-warp on terminal / mass-affecting events:
+                                          // surface impact, maneuver execution. Default false
+                                          // (regular vessels halt on all flagged events).
+    
     // Mode-specific state (one of)
     physx_state: Option<PhysXState>       // Present when mode == PHYSX_ACTIVE
     kepler_state: Option<KeplerState>     // Present when mode == KEPLER_RAILS
@@ -174,7 +183,8 @@ KeplerState {
     next_periapsis_tick: Option<SimTickCount>     // When vessel reaches periapsis; None for hyperbolic post-periapsis
     next_apoapsis_tick: Option<SimTickCount>      // None for hyperbolic orbits (no apoapsis exists)
     next_soi_transition_tick: Option<SimTickCount>  // Earliest tick at which the vessel crosses an SOI boundary (outward exit or inward child entry); populated by SoiCrossingPredictor (commit 046).
-    next_mode_transition_tick: Option<SimTickCount> // Earliest tick at which vessel needs PhysX-active mode (atmospheric entry or surface impact); populated by VesselEventPredictionDriver via AtmosphericEntryPredictor and SurfaceImpactPredictor (commit 047); aggregated via MinNullable.
+    next_atmospheric_entry_tick: Option<SimTickCount> // Tick at which the vessel's trajectory crosses the atmospheric boundary; populated by AtmosphericEntryPredictor (commit 047 / split into dedicated field commit 048 Stage 1). Null on vacuum bodies or orbits above the atmosphere.
+    next_surface_impact_tick: Option<SimTickCount>  // Tick at which the vessel's trajectory intersects the body's surface; populated by SurfaceImpactPredictor (commit 047 / split into dedicated field commit 048 Stage 1). Null on orbits with periapsis above the surface.
 }
 ```
 
@@ -182,7 +192,7 @@ KeplerState {
 
 **SOI-transition null cases (commit 046):** `next_soi_transition_tick` is null when no SOI crossing is predicted within the lookahead horizon (one orbital period for elliptical, ~1 game year for hyperbolic), when the current body has infinite SOI (top-level body convention), or when the orbit is fully contained within the SOI (apoapsis distance below SOI radius). The earliest of outward-exit and inward-child-entry crossings wins when both are predicted. See `SoiCrossingPredictor` XML doc for the two math paths (outward closed-form via conic equation, inward sampled-and-refined via bisection) and the constant-body-position assumption that Phase 0/1 honors.
 
-**Mode-transition aggregation (commit 047):** `next_mode_transition_tick` aggregates atmospheric entry and surface impact predictions via `min()`. Null when neither predictor returns a future tick (orbit fully above the atmosphere with periapsis above the surface, vacuum body with orbit not intersecting surface, or overflow-defense kicked in for very-long-period configurations). The aggregation is one-way: the trigger evaluator reads only the earliest tick, not which event type caused it — `TransitionTriggerReason` label resolution is a known cosmetic concern deferred to a separate cleanup commit (the enum value `AtmosphericEntryPredicted` fires for both atmospheric entry and surface impact as of commit 047). Future commits adding scheduled-burn and interstellar-arrival predictors extend the aggregation to N-way (still via `min()`) without schema change.
+**Mode-transition field split (commit 048 Stage 1 — replaces commit-047 aggregation; SCHEMA-VERSION-INCOMPATIBLE CHANGE):** atmospheric entry and surface impact predictions each populate a dedicated `Option<SimTickCount>` field — `next_atmospheric_entry_tick` and `next_surface_impact_tick` respectively. The trigger evaluator reads both fields independently and fires distinct `TransitionTriggerReason` values (`AtmosphericEntryPredicted` for the atmospheric field, `SurfaceImpactPredicted` for the surface field). This resolves the label imprecision that existed under commit 047's aggregated `next_mode_transition_tick` field — surface impact and atmospheric entry are different events (terminal mass-loss vs aerodynamic engagement) and now produce different trigger reasons at runtime. Future commits adding scheduled-burn and interstellar-arrival predictors add their own dedicated fields and trigger reasons rather than aggregating. **Save-file migration:** existing save files using the commit-047 `next_mode_transition_tick` field need conversion logic — readers cannot determine which event the aggregated value referred to, so safe migration is to drop the value and let the predictors re-populate on the next sim-tick after load.
 
 ### 2.4 Interstellar-cruise mode state
 
@@ -249,6 +259,11 @@ WorldAuthoritativeState {
     // Time
     current_sim_tick: SimTickCount        // The canonical clock
     current_world_time_seconds: f64       // Seconds elapsed since campaign start
+    current_warp_rate: (i64, i64)         // Current time-warp rate as rational (numerator, denominator).
+                                          // (1, 1) = 1x real-time. (0, 1) = paused. Higher numerators =
+                                          // faster warp. Denominator > 0 always. Integer-only continuous
+                                          // mode in v1 (denominator always 1); denominator > 1 reserved
+                                          // for future fractional rates. Added commit 048 Stage 1.
     
     // Galaxy and systems
     galaxy_seed: u64                      // Procgen seed (per commit 008)
@@ -392,7 +407,7 @@ The trigger evaluation runs at every sim-tick. The transition is sharp: at sim-t
 A vessel transitions from Kepler-rails to PhysX-active when any of:
 
 - The vessel enters within 50 km of any active vessel (the active-vessel proximity threshold)
-- The vessel's trajectory predicts atmospheric entry within the next sim-tick (the pre-computed `next_mode_transition_tick` fires)
+- The vessel's trajectory predicts atmospheric entry within the next sim-tick (the pre-computed `next_atmospheric_entry_tick` fires); OR the vessel's trajectory predicts surface impact within the next sim-tick (the pre-computed `next_surface_impact_tick` fires) — these are two distinct trigger conditions producing distinct `TransitionTriggerReason` values as of commit 048 Stage 1
 - The player switches focus to the vessel (player attention pulls vessels into PhysX-active)
 - The vessel reaches a scripted mode change (Vizzy script triggering thrust, for example)
 - Multi-vessel proximity events (multiple Kepler-rails vessels in a 50 km cluster; resolve by computing relative positions and activating the largest cluster)

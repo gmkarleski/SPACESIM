@@ -172,6 +172,20 @@ Hybrid approach. PhysX-active steps stay at 1x; analytic steps scale with warp r
 
 Sim-tick is fixed 30 Hz. Rendering runs at frame rate. Display interpolation between sim-tick states produces smooth visuals; authoritative state remains at sim-tick boundaries only.
 
+### 4.5 Time-warp controller pattern
+
+Time-warp infrastructure (lands in commit 048, scaffolding in Stage 1) follows a singleton-MonoBehaviour-plus-event-bus pattern parallel to `FloatingOriginManager` and `SimTickController`.
+
+**Singleton ownership.** `WarpController` is a singleton MonoBehaviour in `Foundation/SimTick/` that owns the current warp rate. The rate is represented as a rational number — `WarpRate` is a `readonly struct` carrying `(Numerator, Denominator)`. Rational representation is chosen over float multipliers because float multipliers accumulate precision error over long warp sessions (a 10,000x rate held for hours of real time produces sim-tick advancement errors that compound); rational arithmetic keeps the rate exact for deterministic sim-tick advancement. In v1 the denominator is always 1 (integer-only continuous mode, discrete steps {1, 5, 10, 100, 1000, 10000, 100000} plus continuous integers in [1, 1000]); the rational infrastructure is wired up now so future fractional modes (tenths, quarter-steps) can use it without schema or type churn.
+
+**Event-bus halt surfacing.** When the controller halts warp due to an upcoming event (mode transition predicted within the next tick, scheduled burn, atmospheric entry on a non-routine vessel, etc.), it raises an `Action<WarpHaltInfo>` event. UI elements that need to know about halts subscribe to this event independently — Mission Control, the warp-rate HUD, audio cues. This matches the existing `SimTickController.TickAdvanced` pattern: loose coupling between the controller and its consumers, multiple subscribers supported, no controller knowledge of how the halt is surfaced to the player.
+
+**PhysX threshold at 5x via forced KeplerRails transitions.** When warp rate exceeds 5x while a vessel is in `PhysicsMode.PhysXActive`, the controller signals the vessel transition driver to force-transition the vessel to `KeplerRails` mode. The 5x threshold matches a KSP-tested number — empirically the point at which PhysX simulation accuracy degrades enough that continuing produces unphysical behavior. Forced transitions flow through `VesselTransitionDriver` via the new `TransitionTriggerReason.WarpRateForcedRails` enum value (added Stage 1, wired Stage 3); the time-warp controller does NOT call `Vessel.TransitionToKeplerRails` directly. This preserves the architectural pattern that all mode changes flow through the driver — no shortcut bypasses, no second mode-change code path to keep in sync.
+
+**Atmospheric/surface trigger field split (commit 048 Stage 1).** Per §2.3 of the netcode contract, atmospheric entry and surface impact each get their own `KeplerState` field (`NextAtmosphericEntryTick` and `NextSurfaceImpactTick`). The trigger evaluator reads both fields independently and fires distinct `TransitionTriggerReason` values. This is a precondition for routine-supply policy: routine-supply vessels (the new `Vessel.IsRoutineSupply` flag) skip warp halts on atmospheric entry — atmospheric re-entry is expected, repetitive, non-terminal for supply runs — but still halt on surface impact (mass loss is terminal). Without the field split, the controller couldn't distinguish the two events at halt-decision time.
+
+**Asmdef placement.** `WarpController`, `WarpRate`, and `WarpHaltInfo` all live in the `SimTick` asmdef. No new cross-module dependencies; the controller subscribes to its own `SimTickController.TickAdvanced` event, the field-split fields live on `KeplerState` in `Vessels`, and the forced-transition dispatch goes through the existing `VesselTransitionDriver` driver pattern. The diagram from §1.3 (`Vessels → SimTick → Coordinates`) stays unchanged.
+
 ---
 
 ## 5. Coordinate system and floating origin

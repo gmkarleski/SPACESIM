@@ -83,19 +83,37 @@ namespace SpaceSim.Foundation.Vessels
         /// <summary>K→P trigger: vessel entered within 50 km of any active vessel.</summary>
         ProximityToActiveVessel,
 
-        /// <summary>K→P trigger: predicted mode transition imminent within the next
-        /// sim-tick. Reads <see cref="KeplerState.NextModeTransitionTick"/>.
+        /// <summary>K→P trigger: predicted atmospheric entry within the next sim-tick.
+        /// Reads <see cref="KeplerState.NextAtmosphericEntryTick"/>; fires only when
+        /// the vessel's trajectory crosses the atmospheric boundary
+        /// (<c>SurfaceRadiusMeters + AtmosphericTopAltitudeMeters</c>) of the current
+        /// reference body.
         ///
-        /// HISTORICAL NAMING / IMPRECISE AS OF COMMIT 047: this enum value retains
-        /// its "AtmosphericEntryPredicted" name from commit 043 when atmospheric
-        /// entry was the only contributor to <c>NextModeTransitionTick</c>. As of
-        /// commit 047, the field is N-way aggregated (atmospheric entry + surface
-        /// impact, with future scheduled-burn / interstellar-arrival), so this
-        /// trigger reason fires for any populated mode-transition tick — not only
-        /// atmospheric entry. The label rename / split is a known cosmetic concern
-        /// deferred to a separate cleanup commit; see DECISIONS "Atmospheric entry
-        /// + surface impact predictors (commit 047)" entry for the rationale.</summary>
+        /// <para>
+        /// AS OF COMMIT 048: this enum value is atmospheric-only. Surface impact gets
+        /// its own distinct value (<see cref="SurfaceImpactPredicted"/>), and
+        /// <c>NextModeTransitionTick</c> was split into
+        /// <see cref="KeplerState.NextAtmosphericEntryTick"/> and
+        /// <see cref="KeplerState.NextSurfaceImpactTick"/> so the trigger evaluator
+        /// can distinguish the two events at runtime. The label imprecision that
+        /// existed from commit 047 onward is now resolved.
+        /// </para></summary>
         AtmosphericEntryPredicted,
+
+        /// <summary>K→P trigger: predicted surface impact within the next sim-tick.
+        /// Reads <see cref="KeplerState.NextSurfaceImpactTick"/>; fires only when the
+        /// vessel's trajectory intersects the surface radius
+        /// (<c>SurfaceRadiusMeters</c>) of the current reference body.
+        ///
+        /// <para>
+        /// ADDED COMMIT 048: split from the previously-aggregated
+        /// <c>NextModeTransitionTick</c> field. Surface impact is a distinct event
+        /// from atmospheric entry (mass loss vs aerodynamic engagement) and warrants
+        /// a separate trigger reason for diagnostic clarity and future
+        /// terminal-event handling (warp halts for surface impact even on routine
+        /// supply vessels per the upcoming time-warp policy).
+        /// </para></summary>
+        SurfaceImpactPredicted,
 
         /// <summary>K→P trigger: player switched focus to this vessel. Phase 0 stub (no focus subsystem).</summary>
         PlayerFocusSwitch,
@@ -105,5 +123,18 @@ namespace SpaceSim.Foundation.Vessels
 
         /// <summary>K→P trigger: multi-vessel proximity cluster. Phase 0 stub (no clustering logic).</summary>
         MultiVesselProximityCluster,
+
+        /// <summary>K→P trigger: warp rate exceeds the 5x PhysX threshold while the vessel
+        /// is in PhysX-active mode. The time-warp controller (lands in commit 048 Stage 2)
+        /// fires a forced transition to KeplerRails so high-warp advancement stays valid.
+        ///
+        /// <para>
+        /// ADDED COMMIT 048 (Stage 1 enum value; wired up in Stage 3): preserves the
+        /// architectural pattern that all mode changes flow through the driver. The
+        /// time-warp controller cannot bypass <see cref="VesselTransitionDriver"/>
+        /// for forced transitions; it relies on this trigger reason being fired by
+        /// the driver's per-tick evaluator.
+        /// </para></summary>
+        WarpRateForcedRails,
     }
 }

@@ -647,11 +647,12 @@ namespace SpaceSim.Foundation.Vessels.Tests
         }
 
         [Test]
-        public void EventPredictionDriver_OnTickAdvanced_PopulatesNextModeTransitionTickFromAtmosphericEntry()
+        public void EventPredictionDriver_OnTickAdvanced_PopulatesNextAtmosphericEntryTick()
         {
             // Body with atmosphere but no orbit-impacts-surface. Vessel orbit reaches
-            // into atmosphere; predicted entry tick populates NextModeTransitionTick.
-            // (Surface impact predictor returns null here because rPeri > surface.)
+            // into atmosphere; predicted entry tick populates NextAtmosphericEntryTick.
+            // (Surface impact predictor returns null here because rPeri > surface, so
+            // NextSurfaceImpactTick stays null.)
             SetUpEventPredictionDriver();
             SetEarthSurfaceAtmosphereAndInitialize(
                 TestEarthSurfaceRadiusMeters, TestEarthAtmosphericTopMeters);
@@ -659,23 +660,28 @@ namespace SpaceSim.Foundation.Vessels.Tests
             var kepler = NewAtmosphericCrossingState();
             _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
 
-            Assert.IsNull(_vessel.State.KeplerState.NextModeTransitionTick,
-                "Sanity: NextModeTransitionTick should be null before driver fires");
+            Assert.IsNull(_vessel.State.KeplerState.NextAtmosphericEntryTick,
+                "Sanity: NextAtmosphericEntryTick should be null before driver fires");
+            Assert.IsNull(_vessel.State.KeplerState.NextSurfaceImpactTick,
+                "Sanity: NextSurfaceImpactTick should be null before driver fires");
 
             VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
 
-            Assert.IsNotNull(_vessel.State.KeplerState.NextModeTransitionTick,
-                "NextModeTransitionTick should be populated when orbit reaches atmosphere");
-            Assert.Greater(_vessel.State.KeplerState.NextModeTransitionTick.Value, 0,
-                "Predicted mode-transition tick should be in the future");
+            Assert.IsNotNull(_vessel.State.KeplerState.NextAtmosphericEntryTick,
+                "NextAtmosphericEntryTick should be populated when orbit reaches atmosphere");
+            Assert.Greater(_vessel.State.KeplerState.NextAtmosphericEntryTick.Value, 0,
+                "Predicted atmospheric-entry tick should be in the future");
+            Assert.IsNull(_vessel.State.KeplerState.NextSurfaceImpactTick,
+                "NextSurfaceImpactTick should remain null when orbit does not impact surface");
         }
 
         [Test]
-        public void EventPredictionDriver_OnTickAdvanced_PopulatesNextModeTransitionTickFromSurfaceImpact()
+        public void EventPredictionDriver_OnTickAdvanced_PopulatesNextSurfaceImpactTick()
         {
             // Body with NO atmosphere (vacuum) but vessel orbit impacts surface.
-            // SurfaceImpactPredictor populates NextModeTransitionTick;
-            // AtmosphericEntryPredictor returns null (vacuum body).
+            // SurfaceImpactPredictor populates NextSurfaceImpactTick;
+            // AtmosphericEntryPredictor returns null on vacuum body so
+            // NextAtmosphericEntryTick stays null.
             SetUpEventPredictionDriver();
             SetEarthSurfaceAtmosphereAndInitialize(
                 TestEarthSurfaceRadiusMeters, atmosphericTop: 0.0);  // vacuum
@@ -685,20 +691,25 @@ namespace SpaceSim.Foundation.Vessels.Tests
 
             VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
 
-            Assert.IsNotNull(_vessel.State.KeplerState.NextModeTransitionTick,
-                "NextModeTransitionTick should be populated when orbit impacts surface");
-            Assert.Greater(_vessel.State.KeplerState.NextModeTransitionTick.Value, 0,
-                "Predicted mode-transition tick should be in the future");
+            Assert.IsNotNull(_vessel.State.KeplerState.NextSurfaceImpactTick,
+                "NextSurfaceImpactTick should be populated when orbit impacts surface");
+            Assert.Greater(_vessel.State.KeplerState.NextSurfaceImpactTick.Value, 0,
+                "Predicted surface-impact tick should be in the future");
+            Assert.IsNull(_vessel.State.KeplerState.NextAtmosphericEntryTick,
+                "NextAtmosphericEntryTick should remain null on vacuum body");
         }
 
         [Test]
-        public void EventPredictionDriver_OnTickAdvanced_EarliestOfAtmosphericAndSurface_WinsInModeTransitionTick()
+        public void EventPredictionDriver_OnTickAdvanced_BothAtmosphereAndSurfacePredicted_WritesEachFieldIndependently()
         {
-            // Body has both atmosphere AND vessel orbit impacts surface. Vessel
-            // hits atmospheric boundary (threshold = SurfaceRadiusMeters + AtmoTop =
-            // 6.471e6) BEFORE surface (threshold = SurfaceRadiusMeters = 6.371e6),
-            // so atmospheric entry tick should be earlier than surface impact tick.
-            // NextModeTransitionTick = min(atmospheric, surface) = atmospheric tick.
+            // Body has both atmosphere AND vessel orbit impacts surface. Each predictor
+            // writes to its own dedicated KeplerState field (commit 048 Stage 1
+            // field-split; previously the two were aggregated via MinNullable into
+            // NextModeTransitionTick). The atmospheric boundary (threshold =
+            // SurfaceRadiusMeters + AtmoTop = 6.471e6) is geometrically higher than
+            // the surface (threshold = SurfaceRadiusMeters = 6.371e6), so the
+            // atmospheric entry tick comes first on a descending trajectory — but
+            // each field now holds its own predictor's output, not the min.
             SetUpEventPredictionDriver();
             SetEarthSurfaceAtmosphereAndInitialize(
                 TestEarthSurfaceRadiusMeters, TestEarthAtmosphericTopMeters);
@@ -710,25 +721,30 @@ namespace SpaceSim.Foundation.Vessels.Tests
 
             VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
 
-            // Verify NextModeTransitionTick is populated.
-            long? modeTick = _vessel.State.KeplerState.NextModeTransitionTick;
-            Assert.IsNotNull(modeTick,
-                "NextModeTransitionTick should be populated when both atmosphere and surface are reached");
+            // Both fields populated independently.
+            long? atmoFieldTick = _vessel.State.KeplerState.NextAtmosphericEntryTick;
+            long? surfaceFieldTick = _vessel.State.KeplerState.NextSurfaceImpactTick;
+            Assert.IsNotNull(atmoFieldTick,
+                "NextAtmosphericEntryTick should be populated when orbit reaches atmosphere");
+            Assert.IsNotNull(surfaceFieldTick,
+                "NextSurfaceImpactTick should be populated when orbit impacts surface");
 
-            // Compute atmospheric and surface predicted ticks independently for comparison.
-            long? atmoTick = AtmosphericEntryPredictor.PredictNextEntry(
+            // Each field should equal its own predictor's output (no aggregation).
+            long? atmoExpected = AtmosphericEntryPredictor.PredictNextEntry(
                 kepler, _body, currentTick: 1, SimTickController.SimTickIntervalSeconds);
-            long? surfaceTick = SurfaceImpactPredictor.PredictNextImpact(
+            long? surfaceExpected = SurfaceImpactPredictor.PredictNextImpact(
                 kepler, _body, currentTick: 1, SimTickController.SimTickIntervalSeconds);
+            Assert.AreEqual(atmoExpected.Value, atmoFieldTick.Value,
+                "NextAtmosphericEntryTick should equal AtmosphericEntryPredictor output");
+            Assert.AreEqual(surfaceExpected.Value, surfaceFieldTick.Value,
+                "NextSurfaceImpactTick should equal SurfaceImpactPredictor output");
 
-            Assert.IsTrue(atmoTick.HasValue, "Atmospheric entry should be predicted");
-            Assert.IsTrue(surfaceTick.HasValue, "Surface impact should be predicted");
-            Assert.Less(atmoTick.Value, surfaceTick.Value,
+            // Geometric invariant: atmospheric entry (higher threshold radius) fires
+            // before surface impact (lower threshold) on a descending trajectory.
+            // The invariant survives the field split — it's a property of the orbital
+            // geometry, not of the aggregation.
+            Assert.Less(atmoFieldTick.Value, surfaceFieldTick.Value,
                 "Atmospheric entry (higher threshold radius) should fire before surface impact (lower)");
-
-            // The aggregated tick should equal the earlier of the two (the atmospheric tick).
-            Assert.AreEqual(atmoTick.Value, modeTick.Value,
-                "NextModeTransitionTick should equal min(atmosphericEntryTick, surfaceImpactTick)");
         }
 
         [Test]
@@ -755,12 +771,13 @@ namespace SpaceSim.Foundation.Vessels.Tests
         }
 
         [Test]
-        public void EventPredictionDriver_OnTickAdvanced_NoAtmosphereOrImpactExpected_NextModeTransitionTickNull()
+        public void EventPredictionDriver_OnTickAdvanced_NoAtmosphereOrImpactExpected_BothNewFieldsNull()
         {
             // High-altitude circular orbit (e=0.05, rPeri ≈ 6.65e6 above Earth-default
             // surface 6.371e6) around vacuum body. Neither atmospheric entry nor
-            // surface impact applies. NextModeTransitionTick stays null; queue gets
-            // only Periapsis + Apoapsis.
+            // surface impact applies. Both NextAtmosphericEntryTick and
+            // NextSurfaceImpactTick stay null (commit 048 Stage 1 field-split);
+            // queue gets only Periapsis + Apoapsis.
             var controller = SetUpEventPredictionDriver();
             SetEarthSurfaceAtmosphereAndInitialize(
                 TestEarthSurfaceRadiusMeters, atmosphericTop: 0.0);  // vacuum
@@ -771,8 +788,10 @@ namespace SpaceSim.Foundation.Vessels.Tests
 
             VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
 
-            Assert.IsNull(_vessel.State.KeplerState.NextModeTransitionTick,
-                "NextModeTransitionTick should be null when neither atmosphere nor surface is reached");
+            Assert.IsNull(_vessel.State.KeplerState.NextAtmosphericEntryTick,
+                "NextAtmosphericEntryTick should be null on vacuum body");
+            Assert.IsNull(_vessel.State.KeplerState.NextSurfaceImpactTick,
+                "NextSurfaceImpactTick should be null when orbit is above surface");
 
             // Queue has only Periapsis + Apoapsis (no SoiCrossing because Earth has
             // infinite SOI by default in this test, no AtmosphericEntry vacuum body,
