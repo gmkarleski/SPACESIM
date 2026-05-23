@@ -307,6 +307,23 @@ namespace SpaceSim.Foundation.Vessels
 
                 controller.EventQueue.UpdateVesselEntry(
                     vesselId, SimEventType.SoiCrossing, soiCrossingTick);
+
+                // Halt-registration (commit 048 Stage 3): SOI crossing halts unless
+                // the vessel is routine-supply (supply runs through SOIs are
+                // uninteresting). Imminent-check matches the trigger evaluator's
+                // window (predicted within 1 sim-tick of current). Null-safe on
+                // WarpController.Instance — tests / scenes without a WarpController
+                // skip halt registration entirely.
+                if (soiCrossingTick.HasValue
+                    && soiCrossingTick.Value <= tickNumber + 1
+                    && !vessel.IsRoutineSupply)
+                {
+                    RegisterHalt(
+                        vessel,
+                        WarpHaltReason.SoiCrossingPredicted,
+                        soiCrossingTick.Value,
+                        "SOI crossing");
+                }
             }
             catch (Exception ex)
             {
@@ -345,6 +362,21 @@ namespace SpaceSim.Foundation.Vessels
 
                 controller.EventQueue.UpdateVesselEntry(
                     vesselId, SimEventType.AtmosphericEntry, atmosphericEntryTick);
+
+                // Halt-registration (commit 048 Stage 3): atmospheric entry always
+                // halts when imminent (regular AND routine-supply vessels —
+                // aerodynamic engagement and mass loss matter for both). Imminent-
+                // check matches the trigger evaluator's "within 1 sim-tick of
+                // current" window. Null-safe on WarpController.Instance.
+                if (atmosphericEntryTick.HasValue
+                    && atmosphericEntryTick.Value <= tickNumber + 1)
+                {
+                    RegisterHalt(
+                        vessel,
+                        WarpHaltReason.AtmosphericEntryPredicted,
+                        atmosphericEntryTick.Value,
+                        "atmospheric entry");
+                }
             }
             catch (Exception ex)
             {
@@ -366,6 +398,21 @@ namespace SpaceSim.Foundation.Vessels
 
                 controller.EventQueue.UpdateVesselEntry(
                     vesselId, SimEventType.SurfaceImpact, surfaceImpactTick);
+
+                // Halt-registration (commit 048 Stage 3): surface impact always
+                // halts when imminent (regular AND routine-supply vessels — loss
+                // of ship matters regardless of classification). Imminent-check
+                // matches the trigger evaluator's "within 1 sim-tick of current"
+                // window. Null-safe on WarpController.Instance.
+                if (surfaceImpactTick.HasValue
+                    && surfaceImpactTick.Value <= tickNumber + 1)
+                {
+                    RegisterHalt(
+                        vessel,
+                        WarpHaltReason.SurfaceImpactPredicted,
+                        surfaceImpactTick.Value,
+                        "surface impact");
+                }
             }
             catch (Exception ex)
             {
@@ -374,6 +421,38 @@ namespace SpaceSim.Foundation.Vessels
                     $"on vessel '{vessel.DiagnosticName}' at tick {tickNumber}: {ex}");
                 // NextSurfaceImpactTick retains its prior value.
             }
+        }
+
+        /// <summary>
+        /// Construct a <see cref="WarpHaltInfo"/> from predictor output and
+        /// register it with <see cref="WarpController.Instance"/>. Null-safe:
+        /// if the WarpController singleton hasn't been instantiated (test
+        /// scenarios, scenes that don't yet include a WarpController GameObject
+        /// — Stage 4 wires the scene-side), the call is a no-op.
+        ///
+        /// <para>
+        /// Halt-registration call sites already gate on (a) the predictor
+        /// returning a non-null tick value, (b) the predicted tick being
+        /// imminent (within 1 sim-tick of current), and (c) any predictor-
+        /// specific policy (routine-supply gating for SOI crossing). This
+        /// helper is the small shared shape of "build the info, fire the
+        /// register call" — extracted because the same five-line pattern
+        /// appears three times.
+        /// </para>
+        /// </summary>
+        private static void RegisterHalt(
+            IVessel vessel,
+            WarpHaltReason haltReason,
+            long predictedTick,
+            string eventLabel)
+        {
+            var haltInfo = new WarpHaltInfo(
+                haltingVesselId: vessel.State.VesselId,
+                haltReason: haltReason,
+                haltTick: predictedTick,
+                diagnosticMessage:
+                    $"{vessel.DiagnosticName} predicted {eventLabel} at tick {predictedTick}");
+            WarpController.Instance?.RegisterHaltEvent(haltInfo);
         }
     }
 }

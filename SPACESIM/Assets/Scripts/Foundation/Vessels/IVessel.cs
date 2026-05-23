@@ -130,5 +130,23 @@ namespace SpaceSim.Foundation.Vessels
         /// coupling the driver to Unity's <c>GameObject</c> type.
         /// </summary>
         string DiagnosticName { get; }
+
+        /// <summary>
+        /// Whether this vessel is classified as routine supply. Routine vessels
+        /// skip warp-halt registration for predictor events that are expected and
+        /// repetitive in their supply-run profile (SOI crossings as of commit 048
+        /// Stage 3). Surface impact and atmospheric entry still register halts on
+        /// routine vessels — mass-loss and aerodynamic engagement matter
+        /// regardless of vessel classification.
+        ///
+        /// <para>
+        /// Added at commit 048 Stage 3 so <see cref="VesselEventPredictionDriver"/>'s
+        /// per-predictor halt-registration logic can gate on the flag without
+        /// downcasting from <see cref="IVessel"/> to concrete <see cref="Vessel"/>.
+        /// The interface stays read-only; the flag itself is mutable on the
+        /// concrete <see cref="Vessel"/> via the public-setter property there.
+        /// </para>
+        /// </summary>
+        bool IsRoutineSupply { get; }
     }
 }

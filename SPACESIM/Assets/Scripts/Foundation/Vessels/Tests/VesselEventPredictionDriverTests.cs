@@ -58,9 +58,11 @@ namespace SpaceSim.Foundation.Vessels.Tests
         private GameObject _vesselGo;
         private GameObject _bodyGo;
         private GameObject _simTickGo;
+        private GameObject _warpGo;
         private Vessel _vessel;
         private ReferenceBody _body;
         private SimTickController _controller;
+        private WarpController _warp;
 
         [SetUp]
         public void SetUp()
@@ -72,6 +74,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
             BodyRegistry.ClearForTesting();
             FloatingOriginManager.ClearInstanceForTesting();
             SimTickController.ClearInstanceForTesting();
+            WarpController.ClearInstanceForTesting();
             VesselTransitionDriver.Shutdown();
             VesselSoiRerootingDriver.Shutdown();
             VesselEventPredictionDriver.Shutdown();
@@ -117,6 +120,16 @@ namespace SpaceSim.Foundation.Vessels.Tests
             _simTickGo = new GameObject("TestSimTick");
             _controller = _simTickGo.AddComponent<SimTickController>();
             SimTickController.SetInstanceForTesting(_controller);
+
+            // WarpController for halt-registration assertions (commit 048 Stage 3).
+            // The driver's RegisterHalt helper calls WarpController.Instance?... so
+            // the singleton needs to be claimed for halt-event tests to assert on
+            // LastHaltInfo. Tests that specifically verify the null-fallback path
+            // tear this down and re-clear WarpController.Instance.
+            _warpGo = new GameObject("TestWarpController");
+            _warp = _warpGo.AddComponent<WarpController>();
+            WarpController.SetInstanceForTesting(_warp);
+
             VesselEventPredictionDriver.Initialize();
         }
 
@@ -126,11 +139,13 @@ namespace SpaceSim.Foundation.Vessels.Tests
             if (_vesselGo != null) UnityObject.DestroyImmediate(_vesselGo);
             if (_bodyGo != null) UnityObject.DestroyImmediate(_bodyGo);
             if (_simTickGo != null) UnityObject.DestroyImmediate(_simTickGo);
+            if (_warpGo != null) UnityObject.DestroyImmediate(_warpGo);
 
             VesselRegistry.ClearForTesting();
             BodyRegistry.ClearForTesting();
             FloatingOriginManager.ClearInstanceForTesting();
             SimTickController.ClearInstanceForTesting();
+            WarpController.ClearInstanceForTesting();
             VesselTransitionDriver.Shutdown();
             VesselSoiRerootingDriver.Shutdown();
             VesselEventPredictionDriver.Shutdown();
@@ -165,6 +180,11 @@ namespace SpaceSim.Foundation.Vessels.Tests
             public ReferenceBody ReferenceBody { get; set; }
             public string DiagnosticName { get; set; } = "fake-vessel";
             public WorldPosition WorldPosition { get; set; } = WorldPosition.Zero;
+            // Added commit 048 Stage 3: IsRoutineSupply on IVessel for halt-
+            // registration gating. Auto-property with default false matches the
+            // concrete Vessel's default; tests configure it inline when exercising
+            // the gating branches.
+            public bool IsRoutineSupply { get; set; }
 
             public WorldPosition GetWorldPosition() => WorldPosition;
         }
@@ -798,6 +818,281 @@ namespace SpaceSim.Foundation.Vessels.Tests
             // no SurfaceImpact orbit-above-surface).
             Assert.AreEqual(2, controller.EventQueue.Count,
                 "Queue should contain only Periapsis + Apoapsis entries");
+        }
+
+        // ----- Halt-registration (commit 048 Stage 3) -----
+        //
+        // The driver registers a halt with WarpController.Instance when a predictor
+        // returns a tick that is imminent (within 1 sim-tick of currentTick). The
+        // gating policy is per-predictor:
+        //   - Atmospheric entry: always halts (regular AND routine-supply)
+        //   - Surface impact: always halts (regular AND routine-supply)
+        //   - SOI crossing: halts UNLESS IsRoutineSupply is true
+        //   - Periapsis / apoapsis: never halts (informational only)
+        //
+        // Tests below exercise each of those branches under both routine and
+        // non-routine vessel configurations, plus the imminent-window check and the
+        // null-WarpController fallback path.
+
+        /// <summary>
+        /// Helper: compute the surface-impact tick the predictor would return for
+        /// the given KeplerState + body configuration, then drive the predictor
+        /// with currentTick = (predictedTick - 1) so the halt registration's
+        /// imminent-window check fires (predictedTick - 1 + 1 == predictedTick).
+        /// Returns the predicted tick for assertion convenience.
+        /// </summary>
+        private long DriveSurfaceImpactPredictorAtImminentTick(KeplerState kepler)
+        {
+            long? predicted = SurfaceImpactPredictor.PredictNextImpact(
+                kepler, _body, currentTick: 0, SimTickController.SimTickIntervalSeconds);
+            Assert.IsTrue(predicted.HasValue, "Test setup error: predictor returned null");
+            long imminentCurrentTick = predicted.Value - 1;
+            VesselEventPredictionDriver.OnTickAdvanced(imminentCurrentTick);
+            return predicted.Value;
+        }
+
+        /// <summary>Helper: same shape as <see cref="DriveSurfaceImpactPredictorAtImminentTick"/>
+        /// for atmospheric entry.</summary>
+        private long DriveAtmosphericEntryPredictorAtImminentTick(KeplerState kepler)
+        {
+            long? predicted = AtmosphericEntryPredictor.PredictNextEntry(
+                kepler, _body, currentTick: 0, SimTickController.SimTickIntervalSeconds);
+            Assert.IsTrue(predicted.HasValue, "Test setup error: predictor returned null");
+            long imminentCurrentTick = predicted.Value - 1;
+            VesselEventPredictionDriver.OnTickAdvanced(imminentCurrentTick);
+            return predicted.Value;
+        }
+
+        /// <summary>Helper: same shape for SOI crossing.</summary>
+        private long DriveSoiCrossingPredictorAtImminentTick(KeplerState kepler)
+        {
+            long? predicted = SoiCrossingPredictor.PredictNextCrossing(
+                kepler, _body, currentTick: 0, SimTickController.SimTickIntervalSeconds,
+                SoiCrossingPredictor.DetectionAggressiveness.Pragmatic);
+            Assert.IsTrue(predicted.HasValue, "Test setup error: predictor returned null");
+            long imminentCurrentTick = predicted.Value - 1;
+            VesselEventPredictionDriver.OnTickAdvanced(imminentCurrentTick);
+            return predicted.Value;
+        }
+
+        [Test]
+        public void AtmosphericEntryImminent_RegistersHalt_WithCorrectReasonAndTick()
+        {
+            SetUpEventPredictionDriver();
+            SetEarthSurfaceAtmosphereAndInitialize(
+                TestEarthSurfaceRadiusMeters, TestEarthAtmosphericTopMeters);
+            var kepler = NewAtmosphericCrossingState();
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+
+            long predictedTick = DriveAtmosphericEntryPredictorAtImminentTick(kepler);
+
+            Assert.IsTrue(WarpController.Instance.IsHalting,
+                "WarpController should be halting after atmospheric-entry halt registered");
+            Assert.IsTrue(WarpController.Instance.LastHaltInfo.HasValue);
+            Assert.AreEqual(WarpHaltReason.AtmosphericEntryPredicted,
+                WarpController.Instance.LastHaltInfo.Value.HaltReason);
+            Assert.AreEqual(predictedTick, WarpController.Instance.LastHaltInfo.Value.HaltTick);
+            Assert.AreEqual(_vessel.State.VesselId,
+                WarpController.Instance.LastHaltInfo.Value.HaltingVesselId);
+        }
+
+        [Test]
+        public void AtmosphericEntryImminent_RegistersHalt_EvenForRoutineSupply()
+        {
+            // Gating policy: atmospheric entry halts regardless of IsRoutineSupply.
+            SetUpEventPredictionDriver();
+            SetEarthSurfaceAtmosphereAndInitialize(
+                TestEarthSurfaceRadiusMeters, TestEarthAtmosphericTopMeters);
+            var kepler = NewAtmosphericCrossingState();
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+            _vessel.IsRoutineSupply = true;
+
+            DriveAtmosphericEntryPredictorAtImminentTick(kepler);
+
+            Assert.IsTrue(WarpController.Instance.IsHalting,
+                "Atmospheric entry should halt even for routine-supply vessels (aerodynamic engagement matters).");
+            Assert.AreEqual(WarpHaltReason.AtmosphericEntryPredicted,
+                WarpController.Instance.LastHaltInfo.Value.HaltReason);
+        }
+
+        [Test]
+        public void AtmosphericEntryNotImminent_DoesNotRegisterHalt()
+        {
+            // Predicted tick is far in the future; imminent-check fails so no halt.
+            SetUpEventPredictionDriver();
+            SetEarthSurfaceAtmosphereAndInitialize(
+                TestEarthSurfaceRadiusMeters, TestEarthAtmosphericTopMeters);
+            var kepler = NewAtmosphericCrossingState();
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+
+            // tickNumber = 1 is much less than the predicted entry tick; imminent
+            // check (predicted <= currentTick + 1) fails.
+            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
+
+            Assert.IsFalse(WarpController.Instance.IsHalting,
+                "WarpController should NOT halt when predicted entry tick is far in the future.");
+            Assert.IsNull(WarpController.Instance.LastHaltInfo,
+                "LastHaltInfo should remain null when no halt has fired.");
+        }
+
+        [Test]
+        public void SurfaceImpactImminent_RegistersHalt_WithCorrectReason()
+        {
+            SetUpEventPredictionDriver();
+            SetEarthSurfaceAtmosphereAndInitialize(
+                TestEarthSurfaceRadiusMeters, atmosphericTop: 0.0);  // vacuum: only surface
+            var kepler = NewSurfaceImpactState();
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+
+            long predictedTick = DriveSurfaceImpactPredictorAtImminentTick(kepler);
+
+            Assert.IsTrue(WarpController.Instance.IsHalting);
+            Assert.AreEqual(WarpHaltReason.SurfaceImpactPredicted,
+                WarpController.Instance.LastHaltInfo.Value.HaltReason);
+            Assert.AreEqual(predictedTick,
+                WarpController.Instance.LastHaltInfo.Value.HaltTick);
+        }
+
+        [Test]
+        public void SurfaceImpactImminent_RegistersHalt_EvenForRoutineSupply()
+        {
+            // Gating policy: surface impact halts regardless of IsRoutineSupply
+            // (loss of ship matters regardless of mission profile).
+            SetUpEventPredictionDriver();
+            SetEarthSurfaceAtmosphereAndInitialize(
+                TestEarthSurfaceRadiusMeters, atmosphericTop: 0.0);
+            var kepler = NewSurfaceImpactState();
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+            _vessel.IsRoutineSupply = true;
+
+            DriveSurfaceImpactPredictorAtImminentTick(kepler);
+
+            Assert.IsTrue(WarpController.Instance.IsHalting,
+                "Surface impact should halt even for routine-supply vessels (loss of ship matters).");
+            Assert.AreEqual(WarpHaltReason.SurfaceImpactPredicted,
+                WarpController.Instance.LastHaltInfo.Value.HaltReason);
+        }
+
+        [Test]
+        public void SoiCrossingImminent_RegistersHalt_ForRegularVessel()
+        {
+            // Regular vessel (IsRoutineSupply = false default): SOI crossing imminent
+            // SHOULD register a halt.
+            SetUpEventPredictionDriver();
+            SetEarthFiniteSoiAndInitialize(TestEarthSoiRadiusMeters);
+            var kepler = NewCrossingKeplerState();
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+
+            long predictedTick = DriveSoiCrossingPredictorAtImminentTick(kepler);
+
+            Assert.IsTrue(WarpController.Instance.IsHalting,
+                "Regular vessel should halt on imminent SOI crossing.");
+            Assert.AreEqual(WarpHaltReason.SoiCrossingPredicted,
+                WarpController.Instance.LastHaltInfo.Value.HaltReason);
+            Assert.AreEqual(predictedTick,
+                WarpController.Instance.LastHaltInfo.Value.HaltTick);
+        }
+
+        [Test]
+        public void SoiCrossingImminent_DoesNotRegisterHalt_ForRoutineSupply()
+        {
+            // Gating policy: SOI crossing does NOT halt routine-supply vessels —
+            // routine supply runs through SOIs are uninteresting and expected.
+            SetUpEventPredictionDriver();
+            SetEarthFiniteSoiAndInitialize(TestEarthSoiRadiusMeters);
+            var kepler = NewCrossingKeplerState();
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+            _vessel.IsRoutineSupply = true;
+
+            DriveSoiCrossingPredictorAtImminentTick(kepler);
+
+            Assert.IsFalse(WarpController.Instance.IsHalting,
+                "Routine-supply vessel should NOT halt on imminent SOI crossing.");
+            Assert.IsNull(WarpController.Instance.LastHaltInfo,
+                "LastHaltInfo should remain null when SOI crossing is gated.");
+        }
+
+        [Test]
+        public void SoiCrossingImminent_RoutineSupplyVesselStillUpdatesKeplerState()
+        {
+            // IsRoutineSupply gates ONLY the halt registration; the predictor still
+            // fires and the KeplerState field still updates so downstream consumers
+            // (UI, save format, future force-transition wiring) still see the
+            // predicted tick.
+            SetUpEventPredictionDriver();
+            SetEarthFiniteSoiAndInitialize(TestEarthSoiRadiusMeters);
+            var kepler = NewCrossingKeplerState();
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+            _vessel.IsRoutineSupply = true;
+
+            DriveSoiCrossingPredictorAtImminentTick(kepler);
+
+            Assert.IsNotNull(_vessel.State.KeplerState.NextSoiTransitionTick,
+                "Predictor should still populate NextSoiTransitionTick for routine-supply vessels — gating is on halt registration, not on prediction.");
+        }
+
+        [Test]
+        public void PeriapsisApoapsisImminent_DoesNotRegisterHalt()
+        {
+            // Periapsis / apoapsis are informational events; they populate KeplerState
+            // but never halt warp regardless of imminence.
+            SetUpEventPredictionDriver();
+            // Default body: infinite SOI, vacuum, 1.0m surface — no atmospheric / surface /
+            // SOI halts possible. Periapsis/apoapsis predictor still fires on the elliptical
+            // LEO orbit.
+            var kepler = new KeplerState
+            {
+                SemiMajorAxis = LeoRadius,
+                Eccentricity = 0.1,
+                Inclination = 0.0,
+                LongitudeOfAscendingNode = 0.0,
+                ArgumentOfPeriapsis = 0.0,
+                TrueAnomalyAtEpoch = 0.0,
+                EpochTick = 0,
+                ReferenceBodyId = _body.BodyId,
+            };
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+
+            // Drive at an arbitrary tick. Periapsis/apoapsis ticks WILL be populated;
+            // the question is whether halt fires (it should not).
+            VesselEventPredictionDriver.OnTickAdvanced(tickNumber: 1);
+
+            Assert.IsFalse(WarpController.Instance.IsHalting,
+                "Periapsis / apoapsis events should never register a halt.");
+            Assert.IsNull(WarpController.Instance.LastHaltInfo,
+                "LastHaltInfo should stay null when only informational events fire.");
+            // Sanity: the predictor still ran and populated the schema.
+            Assert.IsNotNull(_vessel.State.KeplerState.NextPeriapsisTick,
+                "Sanity: periapsis predictor should still populate the KeplerState field.");
+        }
+
+        [Test]
+        public void HaltRegistration_NoOpWhenWarpControllerNull()
+        {
+            // Tear down the SetUp-installed WarpController. Driver should still run
+            // the predictor pass without throwing; halt registration becomes a no-op
+            // via the WarpController.Instance?... null-safe path.
+            UnityObject.DestroyImmediate(_warpGo);
+            _warpGo = null;
+            _warp = null;
+            WarpController.ClearInstanceForTesting();
+            Assert.IsNull(WarpController.Instance, "Sanity: WarpController.Instance cleared.");
+
+            SetUpEventPredictionDriver();
+            SetEarthSurfaceAtmosphereAndInitialize(
+                TestEarthSurfaceRadiusMeters, atmosphericTop: 0.0);
+            var kepler = NewSurfaceImpactState();
+            _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
+
+            // Drive at the imminent tick; without a WarpController, the registration
+            // helper short-circuits via the null-safe ?. operator.
+            Assert.DoesNotThrow(() => DriveSurfaceImpactPredictorAtImminentTick(kepler),
+                "Driver should not throw when WarpController.Instance is null.");
+
+            // Sanity: predictor still wrote the KeplerState field even though halt
+            // registration was skipped.
+            Assert.IsNotNull(_vessel.State.KeplerState.NextSurfaceImpactTick,
+                "Predictor should still write KeplerState even when halt registration is a no-op.");
         }
     }
 }
