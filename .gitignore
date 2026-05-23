@@ -18,6 +18,7 @@
 **/MemoryCaptures/
 **/obj/
 **/_Recovery/
+**/_Recovery.meta
 
 # Unity build outputs
 **/Build/
