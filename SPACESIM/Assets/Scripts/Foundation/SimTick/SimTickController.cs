@@ -13,10 +13,18 @@ namespace SpaceSim.Foundation.SimTick
     /// The controller drives the 10-step cycle once per Unity FixedUpdate. PhysX-touching
     /// steps (1, 2, 3, 7, 8, 9) execute once per FixedUpdate; analytic-propagation steps
     /// (4, 5, 10) execute N times per FixedUpdate where N is the warp-effective iteration
-    /// count computed by <see cref="SimTickWarpController"/>. Step 6 (mode-transition
-    /// detection / floating-origin shift) runs once per FixedUpdate inside the iteration
-    /// loop (gated by <c>if (i == 0)</c>) because the active-vessel position doesn't change
-    /// within a single FixedUpdate at warp.
+    /// count computed by <see cref="WarpController"/> (commit 048 Stage 2; replaces the
+    /// pre-commit-048 SimTickWarpController). Step 6 (mode-transition detection /
+    /// floating-origin shift) runs once per FixedUpdate inside the iteration loop (gated
+    /// by <c>if (i == 0)</c>) because the active-vessel position doesn't change within a
+    /// single FixedUpdate at warp.
+    ///
+    /// When <see cref="WarpController.Instance"/> is null (e.g., a scene without a
+    /// WarpController GameObject, or an EditMode test that hasn't called
+    /// <see cref="WarpController.SetInstanceForTesting"/>), the cycle falls back to
+    /// single-tick advancement (1 analytic iteration per FixedUpdate) — preserving the
+    /// pre-commit-048 behavior at scene start until Stage 4 wires the WarpController into
+    /// the test scenes.
     ///
     /// Commit 033 (this commit) ships the cycle spine and timing. The individual step
     /// methods are stubs except step 6, which wires through to
@@ -61,9 +69,6 @@ namespace SpaceSim.Foundation.SimTick
 
         /// <summary>The phase the controller is currently executing. <see cref="SimTickPhase.Idle"/> between FixedUpdate calls.</summary>
         public SimTickPhase CurrentPhase { get; private set; } = SimTickPhase.Idle;
-
-        /// <summary>The warp controller. Owns warp-rate state and per-mode ceilings.</summary>
-        public SimTickWarpController Warp { get; } = new SimTickWarpController();
 
         /// <summary>
         /// Analytic event priority queue per netcode contract §4.1 and CONSTRAINTS §2
@@ -170,13 +175,18 @@ namespace SpaceSim.Foundation.SimTick
         /// Accepts null, which means "no active vessel" — step 6 will warn-once and skip
         /// shift detection until a non-null vessel is assigned. When called with null,
         /// the warp controller's active-vessel mode resets to
-        /// <see cref="PhysicsMode.PhysXActive"/> (the most-restrictive default, matching
-        /// <see cref="SimTickWarpController"/>'s construction state).
+        /// <see cref="PhysicsMode.PhysXActive"/> (the most-restrictive default).
         ///
         /// When called with a non-null vessel, the warp controller's mode is updated to
         /// match the vessel's <see cref="IActiveVessel.Mode"/>. Step 6 also refreshes the
         /// warp mode on every FixedUpdate (cheap idempotent assignment), so transitions
         /// during play propagate without an explicit SetActiveVessel re-call.
+        ///
+        /// As of commit 048 Stage 2 the warp-controller propagation is null-safe — if
+        /// <see cref="WarpController.Instance"/> is null (scene without a WarpController
+        /// GameObject; EditMode test that hasn't called SetInstanceForTesting), the
+        /// propagation is a no-op and only the local <see cref="ActiveVessel"/>
+        /// assignment lands.
         ///
         /// This method replaces the commit-033 <c>SetActiveVesselWorldPosition</c>
         /// prototype-bridge API. The new design takes a vessel reference rather than a
@@ -192,14 +202,8 @@ namespace SpaceSim.Foundation.SimTick
         public void SetActiveVessel(IActiveVessel vessel)
         {
             ActiveVessel = vessel;
-            if (vessel == null)
-            {
-                Warp.SetActiveVesselMode(PhysicsMode.PhysXActive);
-            }
-            else
-            {
-                Warp.SetActiveVesselMode(vessel.Mode);
-            }
+            PhysicsMode warpMode = vessel == null ? PhysicsMode.PhysXActive : vessel.Mode;
+            WarpController.Instance?.SetActiveVesselMode(warpMode);
         }
 
         // ----- Test API -----
@@ -291,7 +295,13 @@ namespace SpaceSim.Foundation.SimTick
                 ticksUntilNextEvent = int.MaxValue;
             }
 
-            int analyticIterations = Warp.ComputeAnalyticIterations(ticksUntilNextEvent);
+            // WarpController.Instance is null until a scene wires up the WarpController
+            // GameObject (Stage 4). In that case fall back to single-tick advancement —
+            // preserves pre-commit-048 behavior at scene start and keeps EditMode tests
+            // that don't set up a WarpController working unchanged.
+            int analyticIterations = WarpController.Instance != null
+                ? WarpController.Instance.ComputeAnalyticIterations(ticksUntilNextEvent, TickNumber)
+                : 1;
             RunFixedUpdateCycle(analyticIterations);
             FixedUpdateCount++;
         }
@@ -444,11 +454,12 @@ namespace SpaceSim.Foundation.SimTick
         ///      <see cref="FloatingOriginManager.MaybeShiftOrigin"/> using
         ///      <see cref="ActiveVessel"/>.<see cref="IActiveVessel.GetWorldPosition"/>.
         ///   2. Keep the warp controller's mode in sync with the active vessel's mode
-        ///      by calling <see cref="SimTickWarpController.SetActiveVesselMode"/> on
+        ///      by calling <see cref="WarpController.SetActiveVesselMode"/> on
         ///      every FixedUpdate. This is a cheap idempotent assignment that picks up
         ///      mode transitions during play (PhysX-active ↔ Kepler-rails) without
         ///      requiring an explicit <see cref="SetActiveVessel"/> re-call from the
-        ///      vessel each time it transitions.
+        ///      vessel each time it transitions. Null-safe — if
+        ///      <see cref="WarpController.Instance"/> is null the callout is a no-op.
         ///
         /// Two skip conditions, each producing a one-time warning per controller
         /// lifetime:
@@ -488,8 +499,10 @@ namespace SpaceSim.Foundation.SimTick
 
             // Keep warp mode in sync with active vessel's mode every tick. Idempotent;
             // assignment is cheap. Picks up mode transitions during play without
-            // requiring an explicit SetActiveVessel re-call from the vessel.
-            Warp.SetActiveVesselMode(ActiveVessel.Mode);
+            // requiring an explicit SetActiveVessel re-call from the vessel. Null-safe —
+            // when WarpController.Instance is null (Stage 2 default before Stage 4 wires
+            // a scene WarpController) the callout is a no-op.
+            WarpController.Instance?.SetActiveVesselMode(ActiveVessel.Mode);
 
             FloatingOriginManager.Instance.MaybeShiftOrigin(ActiveVessel.GetWorldPosition());
         }

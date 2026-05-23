@@ -18,7 +18,7 @@ namespace SpaceSim.Foundation.SimTick
     /// <c>docs/NETCODE_CONTRACT.md</c> §1.2). Commit 033 ships the mode enum and the
     /// per-mode warp ceilings; transition detection-and-execution lands in a later commit
     /// when vessel containers exist (the active vessel's mode is currently a configuration
-    /// parameter on <see cref="SimTickWarpController"/> for warp-ceiling computation only).
+    /// parameter on <see cref="WarpController"/> for warp-ceiling computation only).
     /// </summary>
     public enum PhysicsMode
     {

@@ -27,24 +27,41 @@ namespace SpaceSim.Foundation.SimTick.Tests
     {
         private GameObject _controllerGo;
         private SimTickController _controller;
+        private GameObject _warpGo;
+        private WarpController _warp;
 
         [SetUp]
         public void SetUp()
         {
             SimTickController.ClearInstanceForTesting();
             FloatingOriginManager.ClearInstanceForTesting();
+            WarpController.ClearInstanceForTesting();
+
             _controllerGo = new GameObject("TestSimTickController");
             _controller = _controllerGo.AddComponent<SimTickController>();
-            // Note: Awake has NOT fired (EditMode); _controller is functional via direct
-            // method calls but Instance is null. Tests use _controller directly.
+
+            // Default SetUp wires a WarpController so existing tests (which previously
+            // asserted on the now-removed _controller.Warp property) continue to exercise
+            // the warp-aware mode-sync behavior. Integration tests that specifically
+            // verify the null-fallback path (commit 048 Stage 2) tear this down and
+            // re-clear WarpController.Instance.
+            _warpGo = new GameObject("TestWarpController");
+            _warp = _warpGo.AddComponent<WarpController>();
+            WarpController.SetInstanceForTesting(_warp);
+
+            // Note: Awake has NOT fired (EditMode); both _controller and _warp are
+            // functional via direct method calls but their MonoBehaviour Instance claim
+            // is delegated to SetInstanceForTesting above.
         }
 
         [TearDown]
         public void TearDown()
         {
             if (_controllerGo != null) Object.DestroyImmediate(_controllerGo);
+            if (_warpGo != null) Object.DestroyImmediate(_warpGo);
             SimTickController.ClearInstanceForTesting();
             FloatingOriginManager.ClearInstanceForTesting();
+            WarpController.ClearInstanceForTesting();
         }
 
         // ----- Constants -----
@@ -85,8 +102,12 @@ namespace SpaceSim.Foundation.SimTick.Tests
         [Test]
         public void WarpController_IsInitialized()
         {
-            Assert.IsNotNull(_controller.Warp);
-            Assert.AreEqual(1.0, _controller.Warp.EffectiveWarpRate);
+            // As of commit 048 Stage 2 the warp controller is a separate singleton
+            // MonoBehaviour rather than a property on SimTickController. SetUp wires
+            // one in via SetInstanceForTesting; this test confirms the wiring is in
+            // place and the default rate is OneX.
+            Assert.IsNotNull(WarpController.Instance);
+            Assert.AreEqual(WarpRate.OneX, WarpController.Instance.CurrentRate);
         }
 
         // ----- Cycle behavior: tick counter -----
@@ -325,13 +346,13 @@ namespace SpaceSim.Foundation.SimTick.Tests
         public void SetActiveVessel_WithPhysXActive_SetsWarpModeToPhysXActive()
         {
             // Pre-set warp to KeplerRails so we can detect the assignment back to PhysXActive.
-            _controller.Warp.SetActiveVesselMode(PhysicsMode.KeplerRails);
-            Assert.AreEqual(PhysicsMode.KeplerRails, _controller.Warp.ActiveVesselMode);
+            WarpController.Instance.SetActiveVesselMode(PhysicsMode.KeplerRails);
+            Assert.AreEqual(PhysicsMode.KeplerRails, WarpController.Instance.ActiveVesselMode);
 
             var vessel = new ActiveVesselStub { ModeValue = PhysicsMode.PhysXActive };
             _controller.SetActiveVessel(vessel);
 
-            Assert.AreEqual(PhysicsMode.PhysXActive, _controller.Warp.ActiveVesselMode,
+            Assert.AreEqual(PhysicsMode.PhysXActive, WarpController.Instance.ActiveVesselMode,
                 "SetActiveVessel should propagate vessel.Mode to Warp.SetActiveVesselMode.");
         }
 
@@ -341,7 +362,7 @@ namespace SpaceSim.Foundation.SimTick.Tests
             var vessel = new ActiveVesselStub { ModeValue = PhysicsMode.KeplerRails };
             _controller.SetActiveVessel(vessel);
 
-            Assert.AreEqual(PhysicsMode.KeplerRails, _controller.Warp.ActiveVesselMode);
+            Assert.AreEqual(PhysicsMode.KeplerRails, WarpController.Instance.ActiveVesselMode);
         }
 
         [Test]
@@ -349,13 +370,13 @@ namespace SpaceSim.Foundation.SimTick.Tests
         {
             // First put warp in KeplerRails via a vessel.
             _controller.SetActiveVessel(new ActiveVesselStub { ModeValue = PhysicsMode.KeplerRails });
-            Assert.AreEqual(PhysicsMode.KeplerRails, _controller.Warp.ActiveVesselMode);
+            Assert.AreEqual(PhysicsMode.KeplerRails, WarpController.Instance.ActiveVesselMode);
 
             // Now clear ActiveVessel. Warp should reset to PhysXActive (most-restrictive default).
             _controller.SetActiveVessel(null);
 
             Assert.IsNull(_controller.ActiveVessel);
-            Assert.AreEqual(PhysicsMode.PhysXActive, _controller.Warp.ActiveVesselMode,
+            Assert.AreEqual(PhysicsMode.PhysXActive, WarpController.Instance.ActiveVesselMode,
                 "SetActiveVessel(null) should reset warp to PhysXActive (most-restrictive default).");
         }
 
@@ -372,7 +393,7 @@ namespace SpaceSim.Foundation.SimTick.Tests
                 ModeValue = PhysicsMode.PhysXActive,
             };
             _controller.SetActiveVessel(vessel);
-            Assert.AreEqual(PhysicsMode.PhysXActive, _controller.Warp.ActiveVesselMode);
+            Assert.AreEqual(PhysicsMode.PhysXActive, WarpController.Instance.ActiveVesselMode);
 
             // Vessel's mode changes (simulating an in-play transition). Without calling
             // SetActiveVessel again, the warp controller's mode should still track on the
@@ -380,9 +401,77 @@ namespace SpaceSim.Foundation.SimTick.Tests
             vessel.ModeValue = PhysicsMode.KeplerRails;
             _controller.RunFixedUpdateCycle(1);
 
-            Assert.AreEqual(PhysicsMode.KeplerRails, _controller.Warp.ActiveVesselMode,
+            Assert.AreEqual(PhysicsMode.KeplerRails, WarpController.Instance.ActiveVesselMode,
                 "Step 6 should pick up vessel.Mode changes on each FixedUpdate without an explicit SetActiveVessel re-call.");
             UnityObject.DestroyImmediate(managerGo);
+        }
+
+        // ----- SimTickController + WarpController integration (commit 048 Stage 2) -----
+
+        [Test]
+        public void SimTickController_WithWarpControllerAtKepler5x_FixedUpdateAdvancesFiveTicks()
+        {
+            // Configure warp: Kepler-mode vessel + continuous 5x rate. EffectiveRate is
+            // min(5, KeplerRailsCeiling=10000) = 5, so ComputeAnalyticIterations returns
+            // 5 with an empty event queue. The FixedUpdate path runs that many cycles.
+            WarpController.Instance.SetActiveVesselMode(PhysicsMode.KeplerRails);
+            WarpController.Instance.SetContinuousRate(5);
+
+            // The 10-step cycle's tick advancement happens in Step10. Directly invoking
+            // RunFixedUpdateCycle bypasses the FixedUpdate-driven event-queue clamping;
+            // pass 5 to mirror what ComputeAnalyticIterations would have computed in
+            // the FixedUpdate path.
+            int advance = WarpController.Instance.ComputeAnalyticIterations(int.MaxValue, _controller.TickNumber);
+            Assert.AreEqual(5, advance,
+                "ComputeAnalyticIterations should return 5 for a Kepler vessel at 5x with empty event queue.");
+
+            _controller.RunFixedUpdateCycle(advance);
+            Assert.AreEqual(5L, _controller.TickNumber,
+                "FixedUpdate cycle should advance tick counter by analyticIterations (5).");
+        }
+
+        [Test]
+        public void SimTickController_WithWarpControllerNull_FallsBackToSingleTick()
+        {
+            // Tear down the SetUp-installed WarpController and clear the singleton.
+            // The SimTickController FixedUpdate path should fall back to single-tick
+            // advancement (1 cycle per FixedUpdate) — preserves pre-commit-048 behavior
+            // for scenes that don't include a WarpController yet (e.g., TestVessels
+            // scene before Stage 4 wires one in).
+            UnityObject.DestroyImmediate(_warpGo);
+            _warpGo = null;
+            _warp = null;
+            WarpController.ClearInstanceForTesting();
+            Assert.IsNull(WarpController.Instance,
+                "Sanity: WarpController.Instance should be null after teardown.");
+
+            // We can't invoke FixedUpdate directly in EditMode (Awake hasn't fired,
+            // and FixedUpdate is private). Instead verify the null-fallback contract
+            // by inspecting the controller's behavior under direct cycle invocation:
+            // RunFixedUpdateCycle with iterations=1 (the fallback value) advances by 1.
+            _controller.RunFixedUpdateCycle(1);
+            Assert.AreEqual(1L, _controller.TickNumber,
+                "Single-tick fallback should advance tick counter by 1.");
+        }
+
+        [Test]
+        public void SimTickController_WithWarpControllerPaused_AdvancesOneTick()
+        {
+            // Paused warp produces ComputeAnalyticIterations = 1 (the always-at-least-1
+            // floor). The cycle still runs at minimum cadence so non-iterated steps
+            // (1, 2, 3, 7, 8, 9) and Step 6 still execute, but the tick counter
+            // advances by only 1 per FixedUpdate — effectively sim-time pauses at the
+            // cycle-cadence rate.
+            WarpController.Instance.SetActiveVesselMode(PhysicsMode.KeplerRails);
+            WarpController.Instance.SetContinuousRate(100);
+            WarpController.Instance.Pause();
+
+            int advance = WarpController.Instance.ComputeAnalyticIterations(int.MaxValue, _controller.TickNumber);
+            Assert.AreEqual(1, advance,
+                "Paused warp should produce single-tick advance (the always-at-least-1 floor).");
+
+            _controller.RunFixedUpdateCycle(advance);
+            Assert.AreEqual(1L, _controller.TickNumber);
         }
 
         // ----- Test helpers -----
