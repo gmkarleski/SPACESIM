@@ -1,4 +1,5 @@
 using System;
+using NUnit.Framework;
 using SpaceSim.Foundation.Coordinates;
 using SpaceSim.Foundation.SimTick;
 using SpaceSim.Foundation.Vessels;
@@ -170,6 +171,112 @@ namespace SpaceSim.Foundation.Vessels.Tests
                 parentBody: earth);
 
             return moon;
+        }
+
+        // ----- Newton-Raphson convergence / orbit-shape assertions -----
+
+        /// <summary>
+        /// Assert that the supplied <paramref name="e"/> (eccentricity) is within
+        /// the safe range for the Newton-Raphson Kepler solvers in
+        /// <see cref="OrbitalElements"/> (e &lt; <paramref name="threshold"/>,
+        /// default 0.8). Used by test fixtures that synthesize orbits and need
+        /// to confirm their construction stays within solver-stable territory.
+        ///
+        /// <para>
+        /// Replaces the inline pattern <c>Assert.Less(e, 0.8, "Test orbit
+        /// eccentricity must stay below 0.8...")</c> that existed across
+        /// multiple predictor test files since the predictor scaffolding
+        /// landed. Centralised here per commit 053-stage1, closing the
+        /// five-cycle audit-pipeline carryover that flagged the missing
+        /// helper. Migration of the 11 existing inline call sites
+        /// (AtmosphericEntryPredictorTests x3, SurfaceImpactPredictorTests
+        /// x2, SoiCrossingPredictorTests x5, OrbitalElementsTests x1) is
+        /// out of scope for stage 1 and queued as separate fixer-bot work.
+        /// </para>
+        ///
+        /// <para>
+        /// Throws <see cref="NUnit.Framework.AssertionException"/> if
+        /// <paramref name="e"/> is NaN, Infinity, or &gt;= <paramref name="threshold"/>.
+        /// The 0.8 default matches the existing convention; callers can
+        /// tighten via the argument when synthesizing near-circular orbits
+        /// with stricter expectations. <paramref name="contextMessage"/>
+        /// appends a caller-supplied suffix to the failure message for
+        /// disambiguation when multiple eccentricity asserts fire in the
+        /// same test.
+        /// </para>
+        /// </summary>
+        internal static void AssertSolvableEccentricity(
+            double e,
+            double threshold = 0.8,
+            string contextMessage = null)
+        {
+            string suffix = string.IsNullOrEmpty(contextMessage) ? "" : $" — {contextMessage}";
+            Assert.That(
+                double.IsNaN(e),
+                Is.False,
+                $"Eccentricity is NaN; Kepler solvers cannot handle this input{suffix}");
+            Assert.That(
+                double.IsInfinity(e),
+                Is.False,
+                $"Eccentricity is infinite; Kepler solvers cannot handle this input{suffix}");
+            Assert.That(
+                e,
+                Is.LessThan(threshold),
+                $"Test orbit eccentricity must stay below {threshold} for Kepler-solver stability{suffix}");
+        }
+
+        /// <summary>
+        /// Assert that the supplied orbit is not degenerate — i.e. that
+        /// the squared magnitude of the angular-momentum vector r × v
+        /// exceeds the threshold <c>scale · mu · r</c>. Used by test
+        /// fixtures that synthesize position + velocity pairs to verify
+        /// the resulting trajectory is not the purely-radial degenerate
+        /// case that <c>Vessel.TransitionToKeplerRails</c> rejects.
+        ///
+        /// <para>
+        /// Threshold form matches the production guard in
+        /// <c>Vessel.TransitionToKeplerRails</c> (landing in stage 2).
+        /// Relative-form scaling (<c>scale · mu · r</c>) keeps the
+        /// threshold well-behaved across reference bodies of differing
+        /// gravitational parameter and orbits at differing radial
+        /// distance — without scaling, a single absolute threshold would
+        /// be unusable across Earth-LEO vs Moon-LMO test configurations.
+        /// </para>
+        ///
+        /// <para>
+        /// See <c>docs/phase1_validation_incomplete.md</c> (commit 052)
+        /// for the bug shape that motivated this helper: TestVessel's
+        /// purely-radial initial velocity in TestVessels.unity produced
+        /// h = r × v = 0, e = 1, and NaN cascading through
+        /// <c>OrbitalElements.SolveKeplerHyperbolic</c>. The stage 3
+        /// regression test for this case is the first user of this
+        /// helper.
+        /// </para>
+        ///
+        /// <para>
+        /// Throws <see cref="NUnit.Framework.AssertionException"/> if
+        /// <paramref name="angularMomentumSquared"/> &lt; <c>scale · mu · r</c>.
+        /// Default <paramref name="scale"/> 1e-12 is the conventional
+        /// float-tolerance magnitude; callers can tighten via the argument
+        /// when verifying margin to the boundary.
+        /// </para>
+        /// </summary>
+        internal static void AssertNonDegenerateOrbit(
+            double angularMomentumSquared,
+            double mu,
+            double r,
+            double scale = 1e-12,
+            string contextMessage = null)
+        {
+            string suffix = string.IsNullOrEmpty(contextMessage) ? "" : $" — {contextMessage}";
+            double threshold = scale * mu * r;
+            Assert.That(
+                angularMomentumSquared,
+                Is.GreaterThanOrEqualTo(threshold),
+                $"Orbit is degenerate: |h|² ({angularMomentumSquared:G6}) is below threshold " +
+                $"({threshold:G6} = scale {scale} × mu {mu:G6} × r {r:G6}). " +
+                $"Velocity is nearly purely-radial relative to position; " +
+                $"Kepler-rails math cannot resolve this trajectory{suffix}");
         }
     }
 
