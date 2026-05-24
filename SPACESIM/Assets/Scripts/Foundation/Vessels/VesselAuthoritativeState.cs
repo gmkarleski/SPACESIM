@@ -105,6 +105,28 @@ namespace SpaceSim.Foundation.Vessels
         /// </summary>
         public List<Guid> CrewAboard = new List<Guid>();
 
+        // ----- Routine-supply classification (commit 048 Stage 1 framing; field migrated from Vessel MonoBehaviour at commit 057a per DECISIONS D1) -----
+
+        /// <summary>
+        /// Whether this vessel is classified as routine supply. Routine vessels
+        /// skip warp halts on SOI crossings (expected, repetitive, non-terminal
+        /// for supply-run profiles); they still halt on terminal / mass-affecting
+        /// events (surface impact, maneuver execution) and on atmospheric entry
+        /// (aerodynamic engagement matters regardless of classification).
+        /// Default false. Per NETCODE_CONTRACT §2.1.
+        ///
+        /// <para>
+        /// Persistent state — the player's marking of a vessel as routine supply
+        /// survives save/load. Originally placed on the
+        /// <see cref="SpaceSim.Foundation.Vessels.Vessel"/> MonoBehaviour at
+        /// commit 048 Stage 1; migrated here at commit 057a per DECISIONS.md
+        /// commit 057 entry D1, which supersedes the commit 048 entry (e)
+        /// field-location decision now that save/load is architecturally
+        /// load-bearing per commit 055 D3.
+        /// </para>
+        /// </summary>
+        public bool IsRoutineSupply;
+
         // ----- Mode-specific state (exactly one of) -----
 
         /// <summary>Non-null when <see cref="Mode"/> is <see cref="PhysicsMode.PhysXActive"/>.</summary>

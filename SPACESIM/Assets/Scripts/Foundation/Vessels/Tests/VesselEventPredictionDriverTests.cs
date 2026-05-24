@@ -180,11 +180,10 @@ namespace SpaceSim.Foundation.Vessels.Tests
             public ReferenceBody ReferenceBody { get; set; }
             public string DiagnosticName { get; set; } = "fake-vessel";
             public WorldPosition WorldPosition { get; set; } = WorldPosition.Zero;
-            // Added commit 048 Stage 3: IsRoutineSupply on IVessel for halt-
-            // registration gating. Auto-property with default false matches the
-            // concrete Vessel's default; tests configure it inline when exercising
-            // the gating branches.
-            public bool IsRoutineSupply { get; set; }
+            // IsRoutineSupply removed from IVessel at commit 057a per DECISIONS D1.
+            // Tests that need to configure routine-supply behavior set
+            // State.IsRoutineSupply = true on the FakeVessel's State property
+            // (which is the new authoritative location for the field).
 
             public WorldPosition GetWorldPosition() => WorldPosition;
         }
@@ -905,7 +904,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
                 TestEarthSurfaceRadiusMeters, TestEarthAtmosphericTopMeters);
             var kepler = NewAtmosphericCrossingState();
             _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
-            _vessel.IsRoutineSupply = true;
+            _vessel.State.IsRoutineSupply = true;
 
             DriveAtmosphericEntryPredictorAtImminentTick(kepler);
 
@@ -963,7 +962,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
                 TestEarthSurfaceRadiusMeters, atmosphericTop: 0.0);
             var kepler = NewSurfaceImpactState();
             _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
-            _vessel.IsRoutineSupply = true;
+            _vessel.State.IsRoutineSupply = true;
 
             DriveSurfaceImpactPredictorAtImminentTick(kepler);
 
@@ -1002,7 +1001,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
             SetEarthFiniteSoiAndInitialize(TestEarthSoiRadiusMeters);
             var kepler = NewCrossingKeplerState();
             _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
-            _vessel.IsRoutineSupply = true;
+            _vessel.State.IsRoutineSupply = true;
 
             DriveSoiCrossingPredictorAtImminentTick(kepler);
 
@@ -1023,7 +1022,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
             SetEarthFiniteSoiAndInitialize(TestEarthSoiRadiusMeters);
             var kepler = NewCrossingKeplerState();
             _vessel.Initialize(NewState(), _body, PhysicsMode.KeplerRails, kepler);
-            _vessel.IsRoutineSupply = true;
+            _vessel.State.IsRoutineSupply = true;
 
             DriveSoiCrossingPredictorAtImminentTick(kepler);
 

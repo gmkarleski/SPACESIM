@@ -71,35 +71,12 @@ namespace SpaceSim.Foundation.Vessels
         /// </summary>
         public string DiagnosticName => gameObject != null ? gameObject.name : "(null)";
 
-        /// <summary>
-        /// Whether this vessel is classified as routine supply (commit 048 Stage 1).
-        /// Routine-supply vessels do NOT halt time-warp on SOI crossings or
-        /// atmospheric entry events — both are expected, repetitive, and
-        /// non-terminal for the supply mission profile. Routine vessels DO still
-        /// halt time-warp on terminal / mass-affecting events: surface impact
-        /// (vessel destruction), maneuver execution (burn timing matters), and
-        /// other events whose outcome the player needs to see.
-        ///
-        /// <para>
-        /// Defaults to <c>false</c> — regular vessels halt on all flagged events.
-        /// The flag is set in the Inspector or programmatically when a vessel is
-        /// designated as a supply-route automation; vessels switch in and out of
-        /// routine classification across their lifetime (a fresh design's first
-        /// flight is non-routine; once validated as a supply route, the same
-        /// design's subsequent vessels are routine).
-        /// </para>
-        ///
-        /// <para>
-        /// Wired into the time-warp halt logic in Stage 3 of commit 048. The field
-        /// is added in Stage 1 so the schema is in place ahead of the controller
-        /// integration.
-        /// </para>
-        /// </summary>
-        public bool IsRoutineSupply { get => isRoutineSupply; set => isRoutineSupply = value; }
-
         // ----- Internal state -----
 
-        [SerializeField] private bool isRoutineSupply;
+        // IsRoutineSupply field migrated to VesselAuthoritativeState at commit 057a
+        // per DECISIONS D1 (supersedes commit 048 entry (e) field-location decision).
+        // Access via vessel.State.IsRoutineSupply. The field's persistence belongs
+        // on authoritative state, not on this MonoBehaviour wrapper.
 
         private Rigidbody _rb;
         private FloatingOriginAnchor _anchor;

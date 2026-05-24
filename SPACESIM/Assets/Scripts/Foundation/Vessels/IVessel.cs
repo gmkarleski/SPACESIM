@@ -131,22 +131,12 @@ namespace SpaceSim.Foundation.Vessels
         /// </summary>
         string DiagnosticName { get; }
 
-        /// <summary>
-        /// Whether this vessel is classified as routine supply. Routine vessels
-        /// skip warp-halt registration for predictor events that are expected and
-        /// repetitive in their supply-run profile (SOI crossings as of commit 048
-        /// Stage 3). Surface impact and atmospheric entry still register halts on
-        /// routine vessels — mass-loss and aerodynamic engagement matter
-        /// regardless of vessel classification.
-        ///
-        /// <para>
-        /// Added at commit 048 Stage 3 so <see cref="VesselEventPredictionDriver"/>'s
-        /// per-predictor halt-registration logic can gate on the flag without
-        /// downcasting from <see cref="IVessel"/> to concrete <see cref="Vessel"/>.
-        /// The interface stays read-only; the flag itself is mutable on the
-        /// concrete <see cref="Vessel"/> via the public-setter property there.
-        /// </para>
-        /// </summary>
-        bool IsRoutineSupply { get; }
+        // IsRoutineSupply removed from interface at commit 057a per DECISIONS D1.
+        // The field now lives on VesselAuthoritativeState (per NETCODE_CONTRACT §2.1);
+        // callers access via vessel.State.IsRoutineSupply. The driver-side downcast
+        // concern from commit 048 Stage 3 is moot because every IVessel implementation
+        // exposes State via the interface contract — the same indirection that
+        // motivated keeping IsRoutineSupply on IVessel originally is now resolved by
+        // accessing through State (which IS on IVessel).
     }
 }

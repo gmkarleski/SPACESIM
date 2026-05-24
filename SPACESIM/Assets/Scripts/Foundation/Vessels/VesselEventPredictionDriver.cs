@@ -316,7 +316,7 @@ namespace SpaceSim.Foundation.Vessels
                 // skip halt registration entirely.
                 if (soiCrossingTick.HasValue
                     && soiCrossingTick.Value <= tickNumber + 1
-                    && !vessel.IsRoutineSupply)
+                    && !vessel.State.IsRoutineSupply)
                 {
                     RegisterHalt(
                         vessel,
