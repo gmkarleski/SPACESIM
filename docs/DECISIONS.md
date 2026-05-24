@@ -487,6 +487,33 @@ The format is intentionally informal — this is internal project memory, not a 
 
 ---
 
+### Phase 1 closure — doc reconciliation + Phase 2 scope + save format technology (commit 055)
+
+**Date:** 2026-05-24 (commit 055)
+**Question:** Three reconciliations gating Phase 1 closure + Phase 2 entry: (D1) which doc is canonical for Phase 2 scope when PHASE_TRACKER and CONSTRAINTS disagree; (D2) how CONSTRAINTS §9 Phase 1 milestone language should read given the validation arc closed at commit 054; (D3) is save/load sim-state implementation a Phase 1 closure prerequisite or a parallel track to Phase 2.
+**Decision:** Three locked decisions.
+
+**D1 — CONSTRAINTS.md is canonical for Phase 2 scope; PHASE_TRACKER.md reconciled to match.** CONSTRAINTS §9 puts the per-planet procgen 14-stage pipeline (Layer 5) at Phase 2 as Track B alongside vessel construction Track A; PHASE_TRACKER had drifted to put the same pipeline at Phase 4. CONSTRAINTS was settled through commit 025 (per PHASE_TRACKER's Phase 0 remaining-work checklist) — design lock. PHASE_TRACKER is the operational tracker that drifted post-commit-025 without an intentional refactor. Reconciliation lands at this commit: PHASE_TRACKER Phase 2 section restructured to two-track form (Track A vessel construction + Track B per-planet procgen with explicit 14-stage Layer 5 reference + feature layer architecture + hand-tuned home system bodies + seed function backward-compatibility versioning); PHASE_TRACKER Phase 4 section rewritten to visuals-only scope per CONSTRAINTS (PBR, atmospheric scattering, volumetric clouds, terrain rendering, engine effects, re-entry plasma + procgen variation per part category). Phase progression list updated to match.
+
+**D2 — CONSTRAINTS §9 Phase 1 milestone language amended to middle reading.** The original strict reading ("placeholder cube launches from a planet surface, reaches orbit, transfers to a moon, captures into orbit, lands") would have required Phase 3 work to close Phase 1 — thrust, atmospheric ascent, capture burn, landing are all flight-integration scope. The validation arc at commit 054 demonstrates the engine substrate Phase 1 actually delivers: vessel placed on Kepler-rails orbit propagates through multi-body SOI transitions under time-warp, returns to PhysX-active mode over surface; no thrust, no atmospheric flight, no controls. The integrated cube-to-moon flight scenario is Phase 3 work by design. Amended CONSTRAINTS §9 language reflects this scope decision; the strict-reading language is preserved in the amendment text as historical reference.
+
+**D3 — Save/load sim-state implementation is parallel track, not Phase 1 closure prerequisite.** CONSTRAINTS §10 flagged save format technology as a Phase 1-by-deadline open question; lean was JSON for early development. Decision locked at this commit: **JSON for early development** (readable, debuggable, larger; binary alternative deferred to v2 if performance argues for it). Sim-state save/load IMPLEMENTATION is parallel-track per the framing PHASE_TRACKER has used for save/load throughout — develops alongside Phase 2 Track A (vessel construction) work without blocking Phase 2 entry. Format technology decision is the Phase 1 closure item; implementation is parallel work. Schema hooks added at commit 048 stage 1 (per-predictor `KeplerState` fields, `IsRoutineSupply` flag, rational `WarpRate`) are in place ready for the format work.
+
+**Alternatives rejected:**
+- **PHASE_TRACKER wins on D1 (procgen at Phase 4):** would have implied an intentional refactor post-commit-025 that has no DECISIONS entry capturing the move. CONSTRAINTS is the design lock; drift gets reconciled toward the canonical doc, not away from it.
+- **Strict reading on D2:** would have effectively merged late-Phase-1 with early-Phase-3, making the Phase 1 → Phase 2 transition ambiguous. The middle reading scopes Phase 1's validation to the engine substrate the foundation phase actually delivers; the integrated flight scenario gets its proper home in Phase 3.
+- **Loose reading on D2 (components-validated):** would have left Phase 1's milestone language too soft to gate progression. The middle reading is specific enough to verify (vessel-on-rails through multi-body SOI under warp + return to PhysX) while still scoping to engine substrate.
+- **Strict reading on D3 (Phase 1 needs save/load implementation):** would have blocked Phase 2 entry on multi-session save/load implementation work that PHASE_TRACKER's existing "parallel track" framing explicitly does not require. The format technology decision is the substantive Phase 1 closure item; implementation can develop in parallel.
+- **Binary save format from day one:** premature optimization; JSON for early development gives readable/debuggable save files at the cost of larger file size, which is the right tradeoff at this stage. Binary remains a future option without architectural change.
+
+**Rationale (reconcile to design lock + scope honestly + parallel-track explicitly):** D1 makes the canonical doc the source of truth; PHASE_TRACKER is operational, CONSTRAINTS is design — reconciliation flows from operational toward design. D2's middle reading honors what Phase 1 actually validates without overclaiming flight integration that's Phase 3's job. D3 locks the cheapest Phase 1 closure item (format decision) and explicitly frames the parallel track to prevent the Phase 1 → Phase 2 transition from blocking on multi-session save/load implementation work.
+
+**Implication:** Phase 1 closes substantively at commit 055 (this commit). The 049-055 closing block (camera-follow utility, validation readiness audit, multi-body scene + infrastructure, validation-incomplete artifact, three-stage bug fix arc, validation milestone artifact, this doc reconciliation + push) is complete and pushed to origin/main. Phase 2 (Vessel construction Track A + per-planet procgen Track B per CONSTRAINTS §9) is unblocked; entry-point decision (Track A first, Track B first, or mixed) is a fresh-session question. Save/load sim-state implementation can land any time as parallel work; not blocking. Trigger evaluator full activation remains deferred per commit 043's `Enabled = false` design until upstream Phase 3+ state systems exist. Scene drift on `TestVessels.unity` (TestVessel_SoiCrossing accidentally deleted mid-session during the 053 bug-fix work) stays as uncommitted working-tree state per option γ from the validation-pivot decision; restoration is queued for a future hygiene commit and doesn't block Phase 2 entry because the scenarios that depend on the duplicate vessel are validated via component-level EditMode coverage per commit 054's methodology.
+
+**Locked in:** commit 055.
+
+---
+
 ## Pending decisions (open questions still in `docs/CONSTRAINTS.md` §10)
 
 This section mirrors §10's open questions so a reader can find both resolved and pending decisions in one place. When an entry here lands a decision, it moves to "Resolved decisions" above and gets removed from this section.
@@ -503,7 +530,6 @@ Each question is flagged with the phase by which it must be resolved. Bullets mi
 - **Character visual design language** (Phase 4 or 8): specific species look, proportions, color palette, animation style. Commit to mid-stylization humanoid; specifics decided when art direction matures.
 - **Character expressiveness depth** (Phase 4): do characters have animated facial reactions (Kerbal-style screams during stress)? Could be a major emotional asset or scope creep. Decide alongside art direction.
 - **Colony autonomy depth** (Phase 7): do colonies just produce resources, or do they grow / change / develop their own state independently? Time-dilation is more interesting if colonies actually evolve in player's absence.
-- **Save format technology** (Phase 1): JSON (readable, debuggable, larger) vs binary (compact, faster, opaque) vs hybrid. Lean JSON for early development, optional binary later.
 - **Anomaly resolution UX** (Phase 7): how does the player learn what an anomaly's true cause is? Pop-up reveal vs in-world investigation vs progressive observation tier upgrade. Defer.
 
 ---

@@ -1742,7 +1742,9 @@ Coordinate system, floating origin, reference frames, patched conics, time archi
 
 **Prerequisite:** the Phase 0 netcode contract (written contract + prototype) must be in place before Phase 1 begins. The contract specifies the sim-tick boundary between authoritative state and PhysX-active simulation; Phase 1 implements code that respects that boundary.
 
-Validation: placeholder cube launches from a planet surface, reaches orbit, transfers to a moon, captures into orbit, lands. Time-warp works. No graphics required — math correctness is the bar.
+Validation (amended at commit 055 — middle reading): vessel placed on Kepler-rails orbit propagates through multi-body SOI transitions under time-warp, returns to PhysX-active mode over surface. No thrust, no atmospheric flight, no controls — those are Phase 3 integration work. Engine substrate validated end-to-end via component-level Play demonstration + component-level EditMode coverage of the predictor / re-rooting / warp-halt integration. Time-warp works against mode-aware ceilings. Validated at commit 054 (`docs/phase1_validation_results.md`).
+
+The original strict reading ("placeholder cube launches from a planet surface, reaches orbit, transfers to a moon, captures into orbit, lands") would have required Phase 3 work to close Phase 1 (thrust, atmospheric ascent, capture burn, landing — all flight-integration scope). The amended middle reading scopes Phase 1's validation to the engine substrate the foundation phase actually delivers; the integrated cube-to-moon flight scenario is Phase 3 work by design.
 
 ### Phase 2 — Vessel construction and per-planet procgen (weight 2)
 
@@ -1808,7 +1810,7 @@ Each question is flagged with the phase by which it must be resolved.
 - **Character visual design language** (Phase 4 or 8): specific species look, proportions, color palette, animation style. Commit to mid-stylization humanoid; specifics decided when art direction matures.
 - **Character expressiveness depth** (Phase 4): do characters have animated facial reactions (Kerbal-style screams during stress)? Could be a major emotional asset or scope creep. Decide alongside art direction.
 - **Colony autonomy depth** (Phase 7): do colonies just produce resources, or do they grow / change / develop their own state independently? Time-dilation is more interesting if colonies actually evolve in player's absence.
-- **Save format technology** (Phase 1): JSON (readable, debuggable, larger) vs binary (compact, faster, opaque) vs hybrid. Lean JSON for early development, optional binary later.
+- ~~**Save format technology** (Phase 1): JSON (readable, debuggable, larger) vs binary (compact, faster, opaque) vs hybrid.~~ **Resolved at commit 055: JSON for early development.** Sim-state save/load implementation is a parallel track per commit 055 D3 — implementation can develop alongside Phase 2 Track A (vessel construction) work without blocking Phase 2 entry. See DECISIONS.md "Phase 1 closure — doc reconciliation + Phase 2 scope + save format technology (commit 055)".
 - **Anomaly resolution UX** (Phase 7): how does the player learn what an anomaly's true cause is? Pop-up reveal vs in-world investigation vs progressive observation tier upgrade. Defer.
 
 ## 11. Working with Cowork
