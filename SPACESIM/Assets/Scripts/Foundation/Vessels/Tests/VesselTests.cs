@@ -867,6 +867,80 @@ namespace SpaceSim.Foundation.Vessels.Tests
         }
 
         [Test]
+        public void TransitionToKeplerRails_WhenPurelyRadialVelocity_LogsErrorAndReturnsFailedDegenerateOrbit()
+        {
+            // Regression test for the bug found during commit 052's Phase 1
+            // validation session (docs/phase1_validation_incomplete.md). A
+            // purely-radial initial velocity (r parallel to v) produces angular
+            // momentum h = r × v = 0, eccentricity collapses to exactly 1, and
+            // OrbitalElements.SolveKeplerHyperbolic's initial estimate divides
+            // by (e - 1.0) = 0 producing NaN that cascades through
+            // GetWorldPosition into the diagnostic UI and ActiveVesselCameraFollow,
+            // causing a per-frame transform.position rejection error from Unity.
+            //
+            // Commit 053-stage2 added the production guard in
+            // Vessel.TransitionToKeplerRails (step 2.5, between PhysX-state
+            // read and ComputeFromStateVector) that detects
+            // |h|² < scale · μ · |r| and refuses the transition with
+            // TransitionResult.FailedDegenerateOrbit, leaving the vessel in
+            // PhysX-active mode. This test verifies the guard fires correctly,
+            // closing the test-coverage gap the commit 052 Test Runner pass
+            // surfaced (345 green at session time with the bug present and
+            // reachable through normal vessel transition).
+            //
+            // Test setup uses exactly the TestVessels.unity initial conditions
+            // that triggered the original bug: position (7e6, 0, 0), velocity
+            // (10e3, 0, 0) — both purely +X.
+            _vessel.Initialize(NewState(), _body, PhysicsMode.PhysXActive);
+            _vessel.Rigidbody.position = new Vector3(7_000_000f, 0f, 0f);
+            _vessel.Rigidbody.linearVelocity = new Vector3(10_000f, 0f, 0f);
+
+            // Sanity: verify the test setup IS the degenerate case the guard
+            // rejects. Uses stage-1's AssertNonDegenerateOrbit helper inverted
+            // via Assert.Throws<AssertionException> — the helper would fail
+            // because |h|² < threshold, demonstrating the setup is genuinely
+            // the regression case rather than an unrelated configuration that
+            // happens to return FailedDegenerateOrbit for some other reason.
+            double3 r = new double3(7_000_000.0, 0.0, 0.0);
+            double3 v = new double3(10_000.0, 0.0, 0.0);
+            double3 h = math.cross(r, v);
+            double hSquared = math.lengthsq(h);
+            Assert.Throws<AssertionException>(
+                () => AssertNonDegenerateOrbit(
+                    hSquared,
+                    EarthMu,
+                    math.length(r),
+                    scale: PhysicsConstants.DegenerateOrbitAngularMomentumSquaredScale),
+                "Test setup sanity: |h|² should be below the production guard's threshold");
+
+            // Expect the guard's error log. Regex matches the stable static
+            // portion of the message; runtime float interpolations (specific
+            // |h|² value, threshold, μ, |r|) are not coupled to the test, so
+            // future formatting tweaks (e.g., G6 → G3) don't break this
+            // assertion.
+            UnityEngine.TestTools.LogAssert.Expect(LogType.Error,
+                new System.Text.RegularExpressions.Regex(
+                    @"Vessel\.TransitionToKeplerRails on '.+': angular momentum is degenerately small"));
+
+            // Action: attempt the transition.
+            TransitionResult result = _vessel.TransitionToKeplerRails();
+
+            // Verify the guard refused with the expected enum value.
+            Assert.AreEqual(TransitionResult.FailedDegenerateOrbit, result,
+                "Transition should return FailedDegenerateOrbit for purely-radial velocity");
+
+            // Verify the vessel stayed in PhysX-active mode (transition
+            // rejected before any state mutation).
+            Assert.AreEqual(PhysicsMode.PhysXActive, _vessel.Mode,
+                "Mode should remain PhysXActive after rejected transition");
+
+            // Verify no KeplerState was populated — the guard fires at step 2.5,
+            // before ComputeFromStateVector at step 3 would have produced one.
+            Assert.IsNull(_vessel.State.KeplerState,
+                "KeplerState should NOT be populated after rejected transition");
+        }
+
+        [Test]
         public void TransitionToPhysXActive_WhenKeplerStateNull_LogsErrorAndNoOps()
         {
             // State-inconsistency case: vessel in KeplerRails mode but KeplerState
