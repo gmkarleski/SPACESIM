@@ -330,10 +330,17 @@ namespace SpaceSim.Foundation.Vessels
         /// <summary>
         /// Transition from PhysX-active to Kepler-rails mode per §3.1.
         ///
-        /// Procedure (locked in commit 038):
+        /// Procedure (locked in commit 038, degenerate-orbit guard added in commit 053):
         ///   1. Read current PhysX state (position, velocity, rotation, angular velocity).
         ///   2. Convert rigidbody position to <see cref="WorldPosition"/> and subtract the
         ///      reference body's world position to get relative position.
+        ///   2.5. <strong>Degenerate-orbit guard (commit 053):</strong> compute
+        ///      |h|² = |r × v|² and reject the transition with
+        ///      <see cref="TransitionResult.FailedDegenerateOrbit"/> if
+        ///      |h|² &lt; <see cref="PhysicsConstants.DegenerateOrbitAngularMomentumSquaredScale"/>
+        ///      · μ · |r|. This prevents the NaN cascade documented in commit 052
+        ///      (purely-radial velocity → e = 1 → divide-by-zero in
+        ///      <c>OrbitalElements.SolveKeplerHyperbolic</c>'s initial-estimate path).
         ///   3. Compute orbital elements via <see cref="OrbitalElements.ComputeFromStateVector"/>.
         ///   4. Populate <see cref="VesselAuthoritativeState.KeplerState"/> with elements +
         ///      epoch tick.
@@ -343,33 +350,42 @@ namespace SpaceSim.Foundation.Vessels
         ///   7. Clear <see cref="VesselAuthoritativeState.PhysXState"/>.
         ///   8. Destroy FloatingOriginAnchor and Rigidbody components.
         ///
-        /// No-op (logs warning, returns) if already in Kepler-rails mode.
+        /// <para>
+        /// <strong>RETURN VALUE (commit 053):</strong>
+        /// <see cref="TransitionResult.Success"/> on successful transition AND when the
+        /// vessel is already on Kepler-rails (idempotent — desired end-state already
+        /// satisfied; warning still logged).
+        /// <see cref="TransitionResult.FailedDegenerateOrbit"/> when the
+        /// purely-radial-orbit guard refuses the transition.
+        /// <see cref="TransitionResult.FailedOther"/> for the remaining early-return
+        /// cases (not initialized, source mode unsupported, Rigidbody null).
+        /// </para>
         /// </summary>
-        public void TransitionToKeplerRails()
+        public TransitionResult TransitionToKeplerRails()
         {
             if (!_initialized)
             {
                 Debug.LogWarning($"Vessel.TransitionToKeplerRails on '{gameObject.name}' before Initialize; ignored.");
-                return;
+                return TransitionResult.FailedOther;
             }
             if (State.Mode == PhysicsMode.KeplerRails)
             {
                 Debug.LogWarning($"Vessel '{gameObject.name}' already on Kepler-rails; TransitionToKeplerRails ignored.");
-                return;
+                return TransitionResult.Success;
             }
             if (State.Mode == PhysicsMode.InterstellarCruise)
             {
                 Debug.LogError(
                     $"Vessel '{gameObject.name}' is in InterstellarCruise mode (Phase 6 scope); " +
                     $"direct InterstellarCruise → KeplerRails not implemented in Phase 0.");
-                return;
+                return TransitionResult.FailedOther;
             }
             if (_rb == null)
             {
                 Debug.LogError(
                     $"Vessel '{gameObject.name}' in PhysX-active mode but Rigidbody is null. " +
                     $"Cannot transition to Kepler-rails. State is inconsistent; check Initialize was called correctly.");
-                return;
+                return TransitionResult.FailedOther;
             }
 
             long tick = SimTickController.Instance != null
@@ -401,6 +417,46 @@ namespace SpaceSim.Foundation.Vessels
 
             double3 relPosition = vesselWorldPos.Value - _referenceBody.PositionWorld.Value;
             double3 relVelocity = new double3(rbVel.x, rbVel.y, rbVel.z);
+
+            // Step 2.5: Degenerate-orbit guard (commit 053).
+            //
+            // Reject purely-radial (or nearly-radial) trajectories before they reach
+            // ComputeFromStateVector. With r parallel to v, the angular-momentum vector
+            // h = r × v is zero (or near-zero), eccentricity collapses to exactly 1,
+            // and OrbitalElements.SolveKeplerHyperbolic's initial-estimate computation
+            // divides by (e - 1.0) = 0 — producing NaN that cascades through every
+            // downstream consumer of GetWorldPosition. See commit 052's
+            // docs/phase1_validation_incomplete.md for the full bug chain.
+            //
+            // Relative threshold |h|² < scale · μ · |r| scales with the body's
+            // gravitational parameter and the vessel's altitude — the same trajectory
+            // around a different body, or at a different altitude, gets a proportionally
+            // adjusted threshold. The scale value lives in PhysicsConstants alongside
+            // OrbitalElements' other tolerance constants (CircularThreshold,
+            // EquatorialThreshold, KeplerConvergenceTolerance all at 1e-10).
+            //
+            // Radial closed-form Kepler math (1D fall-and-rebound via universal-variable
+            // formulation) is Phase 3+ scope; today's implementation refuses these
+            // trajectories rather than attempting to represent them on rails.
+            double3 angularMomentum = math.cross(relPosition, relVelocity);
+            double angularMomentumSquared = math.lengthsq(angularMomentum);
+            double radialDistance = math.length(relPosition);
+            double degenerateThreshold =
+                PhysicsConstants.DegenerateOrbitAngularMomentumSquaredScale
+                * _referenceBody.Mu * radialDistance;
+            if (angularMomentumSquared < degenerateThreshold)
+            {
+                Debug.LogError(
+                    $"Vessel.TransitionToKeplerRails on '{gameObject.name}': angular " +
+                    $"momentum is degenerately small (|h|² = {angularMomentumSquared:G6}, " +
+                    $"threshold = {degenerateThreshold:G6} = scale " +
+                    $"{PhysicsConstants.DegenerateOrbitAngularMomentumSquaredScale} × " +
+                    $"μ {_referenceBody.Mu:G6} × |r| {radialDistance:G6}). Velocity is " +
+                    $"nearly purely-radial relative to position; KeplerRails transition is " +
+                    $"not supported for degenerate orbits in the current revision (radial " +
+                    $"closed-form math is Phase 3+ work). Vessel remains in PhysX-active mode.");
+                return TransitionResult.FailedDegenerateOrbit;
+            }
 
             // Step 3: Compute orbital elements.
             KeplerState keplerState = OrbitalElements.ComputeFromStateVector(
@@ -435,6 +491,8 @@ namespace SpaceSim.Foundation.Vessels
             // null checks: SimTickController.Instance may be absent in EditMode
             // tests that don't construct the controller.
             SimTickController.Instance?.EventQueue?.RemoveVesselEntries(State.VesselId);
+
+            return TransitionResult.Success;
         }
 
         /// <summary>

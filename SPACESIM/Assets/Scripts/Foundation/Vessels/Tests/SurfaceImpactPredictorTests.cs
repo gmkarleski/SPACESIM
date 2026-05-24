@@ -23,8 +23,8 @@ namespace SpaceSim.Foundation.Vessels.Tests
     /// </summary>
     public class SurfaceImpactPredictorTests
     {
-        private const double EarthMassKg = 5.972e24;
-        private static readonly double EarthMu = CoordinateMath.G * EarthMassKg;
+        private const double EarthMassKg = PhysicsConstants.EarthMassKg;
+        private static readonly double EarthMu = PhysicsConstants.EarthMu;
         private const double EarthSurfaceRadiusMeters = 6.371e6;
         private const double TickIntervalSeconds = 1.0 / 30.0;
 

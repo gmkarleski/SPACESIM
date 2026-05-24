@@ -1,5 +1,6 @@
 using System;
 using NUnit.Framework;
+using SpaceSim.Foundation.Coordinates;
 using SpaceSim.Foundation.Vessels;
 using UnityEngine;
 // Alias UnityEngine.Object to disambiguate from System.Object. Matches the pattern
@@ -163,7 +164,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
             BodyRegistry.ClearForTesting();
             _body1.InitializeBodyForTesting();
             _body2.InitializeBodyForTesting(
-                massKg: 5.972e24,
+                massKg: PhysicsConstants.EarthMassKg,
                 soiRadiusMeters: double.PositiveInfinity,
                 parentBody: _body1);
 

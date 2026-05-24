@@ -199,7 +199,28 @@ namespace SpaceSim.Foundation.Vessels
             // Rigidbody state, which is exactly what we want.
             if (_initialMode == PhysicsMode.KeplerRails)
             {
-                _vessel.TransitionToKeplerRails();
+                // Check the transition result (commit 053: TransitionToKeplerRails
+                // now returns TransitionResult instead of void). If the initial-mode
+                // transition fails (e.g., FailedDegenerateOrbit because the initial
+                // velocity is purely radial), the vessel silently stays in PhysX-
+                // active mode without this surface log; the per-frame error from the
+                // production guard is informative but doesn't connect back to the
+                // scene-setup issue. This log explicitly names the field that drove
+                // the failed transition so the scene author can correct the
+                // _initialVelocity vector.
+                TransitionResult initialResult = _vessel.TransitionToKeplerRails();
+                if (initialResult != TransitionResult.Success)
+                {
+                    Debug.LogError(
+                        $"TestVesselDriver on '{gameObject.name}': _initialMode = " +
+                        $"KeplerRails but the post-Initialize transition returned " +
+                        $"{initialResult}. Vessel remains in PhysX-active mode. " +
+                        $"See the prior log entry from Vessel.TransitionToKeplerRails " +
+                        $"for the specific failure reason. If FailedDegenerateOrbit, " +
+                        $"the _initialVelocity Inspector field is parallel to the " +
+                        $"vessel's initial position — change it to include a " +
+                        $"tangential component, or leave _initialMode at PhysXActive.");
+                }
             }
         }
 
@@ -228,8 +249,27 @@ namespace SpaceSim.Foundation.Vessels
                 {
                     if (_vessel.Mode == PhysicsMode.PhysXActive)
                     {
-                        _vessel.TransitionToKeplerRails();
-                        LogPhase0LimitationOnce();
+                        // Check the transition result (commit 053: TransitionToKeplerRails
+                        // now returns TransitionResult instead of void). Only log the
+                        // Phase 0 limitation if the transition actually succeeded —
+                        // logging it on FailedDegenerateOrbit would be misleading
+                        // (the vessel didn't transition to Kepler-rails so there's
+                        // no Phase 0 limitation to warn about).
+                        TransitionResult spaceKeyResult = _vessel.TransitionToKeplerRails();
+                        if (spaceKeyResult == TransitionResult.Success)
+                        {
+                            LogPhase0LimitationOnce();
+                        }
+                        else
+                        {
+                            Debug.LogWarning(
+                                $"TestVesselDriver on '{gameObject.name}': Space-key " +
+                                $"requested PhysXActive → KeplerRails transition but " +
+                                $"the call returned {spaceKeyResult}. Vessel remains " +
+                                $"in PhysX-active mode. See the prior log entry from " +
+                                $"Vessel.TransitionToKeplerRails for the specific " +
+                                $"failure reason.");
+                        }
                     }
                     else if (_vessel.Mode == PhysicsMode.KeplerRails)
                     {

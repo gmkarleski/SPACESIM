@@ -41,7 +41,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
     /// </summary>
     public class VesselSoiRerootingDriverTests
     {
-        private const double EarthMassKg = 5.972e24;
+        private const double EarthMassKg = PhysicsConstants.EarthMassKg;
 
         private GameObject _vesselGo;
         private GameObject _bodyGo;

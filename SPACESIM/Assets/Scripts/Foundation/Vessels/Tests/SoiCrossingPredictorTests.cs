@@ -27,8 +27,8 @@ namespace SpaceSim.Foundation.Vessels.Tests
     public class SoiCrossingPredictorTests
     {
         // Body parameters at Earth-Moon scale.
-        private const double EarthMassKg = 5.972e24;
-        private static readonly double EarthMu = CoordinateMath.G * EarthMassKg;
+        private const double EarthMassKg = PhysicsConstants.EarthMassKg;
+        private static readonly double EarthMu = PhysicsConstants.EarthMu;
         private const double EarthSoiRadiusMeters = 9.24e8;  // Real Earth heliocentric SOI ~924,000 km
         private const double MoonMassKg = 7.342e22;
         private const double MoonSoiRadiusMeters = 6.6e7;    // Real Moon SOI ~66,100 km

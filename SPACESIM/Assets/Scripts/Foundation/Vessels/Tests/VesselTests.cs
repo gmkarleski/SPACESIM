@@ -34,8 +34,8 @@ namespace SpaceSim.Foundation.Vessels.Tests
     /// </summary>
     public class VesselTests
     {
-        private const double EarthMassKg = 5.972e24;
-        private static readonly double EarthMu = CoordinateMath.G * EarthMassKg;
+        private const double EarthMassKg = PhysicsConstants.EarthMassKg;
+        private static readonly double EarthMu = PhysicsConstants.EarthMu;
         // LeoRadius moved to VesselTestHelpers (imported via `using static`).
 
         private GameObject _vesselGo;

@@ -16,8 +16,8 @@ namespace SpaceSim.Foundation.Vessels.Tests
     /// </summary>
     public class PeriapsisApoapsisPredictorTests
     {
-        private const double EarthMassKg = 5.972e24;
-        private static readonly double EarthMu = CoordinateMath.G * EarthMassKg;
+        private const double EarthMassKg = PhysicsConstants.EarthMassKg;
+        private static readonly double EarthMu = PhysicsConstants.EarthMu;
         private const double LeoRadius = 7_000_000.0;
         private const double TickIntervalSeconds = 1.0 / 30.0;  // 30 Hz sim-tick
 

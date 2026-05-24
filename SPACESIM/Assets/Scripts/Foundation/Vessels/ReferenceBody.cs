@@ -53,11 +53,13 @@ namespace SpaceSim.Foundation.Vessels
         public Guid BodyId { get; private set; }
 
         /// <summary>
-        /// Body mass in kilograms. Default is Earth-like (5.972 × 10^24 kg) so the Phase 0
-        /// test scene produces realistic orbital elements at LEO-scale altitudes.
+        /// Body mass in kilograms. Default is Earth-like
+        /// (<see cref="PhysicsConstants.EarthMassKg"/>) so the Phase 0 test scene
+        /// produces realistic orbital elements at LEO-scale altitudes. The literal value
+        /// is centralized in <see cref="PhysicsConstants"/> per commit 053-stage2.
         /// </summary>
-        [SerializeField, Tooltip("Body mass in kilograms. Default 5.972e24 (Earth-equivalent).")]
-        private double massKg = 5.972e24;
+        [SerializeField, Tooltip("Body mass in kilograms. Default PhysicsConstants.EarthMassKg (5.972e24, Earth-equivalent).")]
+        private double massKg = PhysicsConstants.EarthMassKg;
 
         /// <summary>Body mass in kilograms.</summary>
         public double MassKg => massKg;

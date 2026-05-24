@@ -236,7 +236,24 @@ namespace SpaceSim.Foundation.Vessels
                 {
                     if (suggested == PhysicsMode.KeplerRails)
                     {
-                        vessel.TransitionToKeplerRails();
+                        // Check the transition result (commit 053:
+                        // TransitionToKeplerRails now returns TransitionResult
+                        // instead of void). If the transition is refused (typically
+                        // FailedDegenerateOrbit), the driver should log the
+                        // refusal at this level since the vessel-level log doesn't
+                        // know about the driver's per-tick context. Driver does
+                        // NOT continue retrying — the suggestion logic will
+                        // re-evaluate next tick and may or may not still suggest
+                        // KeplerRails based on the vessel's updated state.
+                        TransitionResult result = vessel.TransitionToKeplerRails();
+                        if (result != TransitionResult.Success)
+                        {
+                            Debug.LogWarning(
+                                $"VesselTransitionDriver: vessel '{vesselName}' " +
+                                $"KeplerRails transition returned {result} at tick " +
+                                $"{tickNumber}. Vessel stays in {current} mode; " +
+                                $"driver will re-evaluate next tick.");
+                        }
                     }
                     else if (suggested == PhysicsMode.PhysXActive)
                     {

@@ -39,8 +39,8 @@ namespace SpaceSim.Foundation.Vessels.Tests
     /// </summary>
     public class VesselTransitionDriverTests
     {
-        private const double EarthMassKg = 5.972e24;
-        private static readonly double EarthMu = CoordinateMath.G * EarthMassKg;
+        private const double EarthMassKg = PhysicsConstants.EarthMassKg;
+        private static readonly double EarthMu = PhysicsConstants.EarthMu;
 
         private GameObject _vesselGo;
         private GameObject _bodyGo;

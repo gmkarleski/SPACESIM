@@ -24,8 +24,8 @@ namespace SpaceSim.Foundation.Vessels.Tests
     public class OrbitalElementsTests
     {
         // Earth-equivalent gravitational parameter for repeatable orbital scales.
-        private const double EarthMassKg = 5.972e24;
-        private static readonly double EarthMu = CoordinateMath.G * EarthMassKg;
+        private const double EarthMassKg = PhysicsConstants.EarthMassKg;
+        private static readonly double EarthMu = PhysicsConstants.EarthMu;
 
         // Test radius: 7000 km, roughly LEO. Circular velocity at this radius is
         // sqrt(μ/r) ≈ 7546 m/s. Periapsis distance for elliptical tests uses this.

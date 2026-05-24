@@ -45,7 +45,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
     /// </summary>
     public class VesselEventPredictionDriverTests
     {
-        private const double EarthMassKg = 5.972e24;
+        private const double EarthMassKg = PhysicsConstants.EarthMassKg;
         // LeoRadius is also available via `using static VesselTestHelpers`, but
         // the original file declared it locally before the helper extraction; the
         // local declaration is retained to avoid a name-resolution diff at the
