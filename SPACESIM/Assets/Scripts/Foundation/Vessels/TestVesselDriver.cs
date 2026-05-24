@@ -43,6 +43,29 @@ namespace SpaceSim.Foundation.Vessels
     /// driver doesn't add them). User wires the four serialized fields via Inspector:
     /// the Vessel reference (typically self-reference), the ReferenceBody reference,
     /// the initial velocity, and the diagnostic Text label.
+    ///
+    /// MULTI-VESSEL TOGGLES (commit 051):
+    /// In scenes with multiple TestVessel GameObjects (e.g., TestVessels.unity's
+    /// canonical vessel + <c>TestVessel_SoiCrossing</c> for SOI re-rooting validation),
+    /// exactly ONE driver should register itself as the active vessel, write to the
+    /// diagnostic label, and respond to the Space-key mode toggle. The three
+    /// <c>[SerializeField]</c> bool flags (<see cref="_setAsActiveVessel"/>,
+    /// <see cref="_writeDiagnosticLabel"/>, <see cref="_handleSpaceKeyToggle"/>)
+    /// default <c>true</c> — preserves single-vessel scene behavior with zero
+    /// reconfiguration — and should be UNCHECKED on non-canonical duplicates so they
+    /// don't race the canonical driver. The duplicate becomes a vessel that exists,
+    /// propagates, and participates in registry iteration, but doesn't touch UI or
+    /// input. A fourth field <see cref="_initialMode"/> (default
+    /// <c>PhysicsMode.PhysXActive</c>) covers the workflow gap that emerged from
+    /// the three-toggle resolution: with <c>_handleSpaceKeyToggle</c> unchecked,
+    /// the duplicate cannot reach <c>KeplerRails</c> via the Space key — so
+    /// <c>_initialMode = KeplerRails</c> on the duplicate triggers a
+    /// <c>TransitionToKeplerRails</c> immediately after PhysX-active Initialize
+    /// completes, giving the duplicate a starting Kepler orbit derived from its
+    /// just-applied initial velocity. The transition runs post-Initialize (not via
+    /// the 3-arg Initialize overload, which rejects KeplerRails without precomputed
+    /// elements — see commit 042). See <c>commits/051_multi_body_test_scene.md</c>
+    /// for the Hierarchy-order race rationale that motivated this pattern.
     /// </summary>
     [RequireComponent(typeof(Vessel))]
     public sealed class TestVesselDriver : MonoBehaviour
@@ -58,6 +81,18 @@ namespace SpaceSim.Foundation.Vessels
 
         [SerializeField, Tooltip("Optional UI Text label for diagnostic output. Null = no label updates.")]
         private Text _diagnosticLabel;
+
+        [SerializeField, Tooltip("In multi-vessel scenes, exactly one driver should set itself as SimTickController.ActiveVessel. Default true; uncheck on non-canonical duplicates to prevent the Hierarchy-order race that defeats the canonical driver's claim. See class doc MULTI-VESSEL TOGGLES.")]
+        private bool _setAsActiveVessel = true;
+
+        [SerializeField, Tooltip("In multi-vessel scenes sharing one diagnostic UI Text, only the canonical driver should write to it; otherwise both drivers thrash the same Text every frame (last-writer-wins). Default true; uncheck on non-canonical duplicates. See class doc MULTI-VESSEL TOGGLES.")]
+        private bool _writeDiagnosticLabel = true;
+
+        [SerializeField, Tooltip("In multi-vessel scenes, only the canonical driver should respond to the Space-key mode toggle; otherwise all vessels flip mode together, which kills SOI tests that require the non-canonical vessel to stay on KeplerRails independently of the canonical vessel's mode. Default true; uncheck on non-canonical duplicates. See class doc MULTI-VESSEL TOGGLES.")]
+        private bool _handleSpaceKeyToggle = true;
+
+        [SerializeField, Tooltip("Initial PhysicsMode for the vessel after PhysX-active Initialize completes. Default PhysXActive (no transition — preserves canonical TestVessel behavior). Set to KeplerRails for multi-vessel-scene duplicates that have _handleSpaceKeyToggle unchecked and thus cannot be toggled to Kepler via the Space key. The transition runs AFTER Initialize so the rigidbody has the just-applied initial velocity baked into the computed Kepler elements. See class doc MULTI-VESSEL TOGGLES.")]
+        private PhysicsMode _initialMode = PhysicsMode.PhysXActive;
 
         private bool _phase0LimitationLogged;
 
@@ -102,17 +137,22 @@ namespace SpaceSim.Foundation.Vessels
             }
 
             // Register the vessel with the sim-tick controller as the active vessel. Step 6
-            // will pull position + mode from the vessel each tick.
-            if (SimTickController.Instance != null)
+            // will pull position + mode from the vessel each tick. Gated by
+            // _setAsActiveVessel so multi-vessel scenes can have exactly one canonical
+            // active vessel — see class doc MULTI-VESSEL TOGGLES.
+            if (_setAsActiveVessel)
             {
-                SimTickController.Instance.SetActiveVessel(_vessel);
-            }
-            else
-            {
-                Debug.LogWarning(
-                    $"TestVesselDriver on '{gameObject.name}': SimTickController.Instance is null at Start. " +
-                    $"No active vessel will be registered. Floating-origin shifts will not fire until the " +
-                    $"controller exists and SetActiveVessel is called.");
+                if (SimTickController.Instance != null)
+                {
+                    SimTickController.Instance.SetActiveVessel(_vessel);
+                }
+                else
+                {
+                    Debug.LogWarning(
+                        $"TestVesselDriver on '{gameObject.name}': SimTickController.Instance is null at Start. " +
+                        $"No active vessel will be registered. Floating-origin shifts will not fire until the " +
+                        $"controller exists and SetActiveVessel is called.");
+                }
             }
 
             // Wire up the per-sim-tick mode transition trigger evaluator (commit 043).
@@ -142,6 +182,25 @@ namespace SpaceSim.Foundation.Vessels
             // Stage 3 — until then the queue is populated but not consulted, so
             // observable Play behavior is unchanged.
             VesselEventPredictionDriver.Initialize();
+
+            // Optionally transition to KeplerRails after PhysXActive setup is
+            // complete. TransitionToKeplerRails computes Kepler elements from the
+            // current Rigidbody position + linearVelocity — so the orbit reflects
+            // the initial velocity we just applied. Default _initialMode =
+            // PhysXActive preserves the canonical TestVessel's behavior (Space-key
+            // remains the only path to Kepler); _initialMode = KeplerRails on a
+            // multi-vessel-scene duplicate (which has _handleSpaceKeyToggle = false
+            // and thus can't respond to Space) gives that duplicate a way to start
+            // on rails so VesselSoiRerootingDriver picks it up. We do NOT pass
+            // _initialMode directly to Vessel.Initialize because the 3-arg overload
+            // rejects KeplerRails without a precomputed initialKeplerState (commit
+            // 042 design — Initialize falls back to PhysXActive with an error log).
+            // The post-init transition path computes the elements from current
+            // Rigidbody state, which is exactly what we want.
+            if (_initialMode == PhysicsMode.KeplerRails)
+            {
+                _vessel.TransitionToKeplerRails();
+            }
         }
 
         private void Update()
@@ -159,22 +218,30 @@ namespace SpaceSim.Foundation.Vessels
             // The wasPressedThisFrame property is the new-Input-System equivalent of
             // legacy Input.GetKeyDown — fires once per key-down transition, false for held
             // keys after the first frame.
-            Keyboard keyboard = Keyboard.current;
-            if (keyboard != null && keyboard.spaceKey.wasPressedThisFrame)
+            // Space-key mode toggle, gated by _handleSpaceKeyToggle so multi-vessel
+            // scenes can have exactly one canonical driver responding to the keypress.
+            // See class doc MULTI-VESSEL TOGGLES.
+            if (_handleSpaceKeyToggle)
             {
-                if (_vessel.Mode == PhysicsMode.PhysXActive)
+                Keyboard keyboard = Keyboard.current;
+                if (keyboard != null && keyboard.spaceKey.wasPressedThisFrame)
                 {
-                    _vessel.TransitionToKeplerRails();
-                    LogPhase0LimitationOnce();
-                }
-                else if (_vessel.Mode == PhysicsMode.KeplerRails)
-                {
-                    _vessel.TransitionToPhysXActive();
+                    if (_vessel.Mode == PhysicsMode.PhysXActive)
+                    {
+                        _vessel.TransitionToKeplerRails();
+                        LogPhase0LimitationOnce();
+                    }
+                    else if (_vessel.Mode == PhysicsMode.KeplerRails)
+                    {
+                        _vessel.TransitionToPhysXActive();
+                    }
                 }
             }
 
-            // Refresh diagnostic UI.
-            if (_diagnosticLabel != null)
+            // Refresh diagnostic UI, gated by _writeDiagnosticLabel so multi-vessel
+            // scenes can have exactly one canonical driver writing to the shared Text.
+            // See class doc MULTI-VESSEL TOGGLES.
+            if (_writeDiagnosticLabel && _diagnosticLabel != null)
             {
                 _diagnosticLabel.text = BuildDiagnosticText();
             }
