@@ -923,7 +923,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
             double rApo = 1.5e9;
             double a = 0.5 * (rPeri + rApo);
             double e = (rApo - rPeri) / (rApo + rPeri);
-            Assert.Less(e, 0.8, "Test orbit eccentricity must stay below 0.8 for solver stability");
+            VesselTestHelpers.AssertSolvableEccentricity(e);
 
             double targetRadius = 9.24e8;
             var state = BuildState(a, e, trueAnomalyAtEpoch: 0.0);

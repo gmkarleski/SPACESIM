@@ -66,27 +66,15 @@ namespace SpaceSim.Foundation.Vessels.Tests
         /// </summary>
         internal const double LeoRadius = 7_000_000.0;
 
-        /// <summary>
-        /// Earth-Moon mean distance in meters (3.844 × 10⁸ m). Used to position
-        /// the Moon body in the Earth-Moon test substrate and as a synthetic
-        /// "vessel co-located with Moon" semi-major axis in SOI-entry tests.
-        /// </summary>
-        internal const double EarthMoonDistanceMeters = 3.844e8;
-
-        /// <summary>
-        /// Moon mass in kilograms (7.342 × 10²² kg). Used by
-        /// <see cref="BuildMoonAsChildOfEarth"/> when constructing the Moon body.
-        /// </summary>
-        internal const double MoonMassKg = 7.342e22;
-
-        /// <summary>
-        /// Moon SOI radius in meters (~66,100 km — the real Moon's sphere of
-        /// influence relative to Earth). Used by
-        /// <see cref="BuildMoonAsChildOfEarth"/> for the Moon body's SOI radius.
-        /// Finite (unlike the SetUp _body's default <see cref="double.PositiveInfinity"/>)
-        /// so SOI-crossing logic can be exercised.
-        /// </summary>
-        internal const double MoonSoiRadiusMeters = 6.6e7;
+        // EarthMoonDistanceMeters / MoonMassKg / MoonSoiRadiusMeters migrated
+        // to PhysicsConstants at commit 056. BuildMoonAsChildOfEarth references
+        // those directly. Precision note: the migration also reconciled
+        // MoonSoiRadiusMeters from this file's prior 6.6e7 to the canonical
+        // 6.6183e7 in PhysicsConstants — the 5 BuildMoonAsChildOfEarth call
+        // sites are insensitive to the 0.28% precision change (per the commit
+        // 056 sensitivity check); SoiCrossingPredictorTests and
+        // OrbitalElementsTests retain their own local 6.6e7 declarations
+        // pending separate fixer-bot reconciliation.
 
         // ----- State builders -----
 
@@ -157,7 +145,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
         internal static ReferenceBody BuildMoonAsChildOfEarth(ReferenceBody earth)
         {
             var moonGo = new GameObject("Moon");
-            moonGo.transform.position = new Vector3((float)EarthMoonDistanceMeters, 0, 0);
+            moonGo.transform.position = new Vector3((float)PhysicsConstants.EarthMoonDistanceMeters, 0, 0);
             var moon = moonGo.AddComponent<ReferenceBody>();
 
             // Make sure Earth's BodyId is populated before Moon resolves its parent.
@@ -166,8 +154,8 @@ namespace SpaceSim.Foundation.Vessels.Tests
             // Configure Moon with mass + finite SOI + Earth as parent via the
             // parameterized InitializeBodyForTesting overload.
             moon.InitializeBodyForTesting(
-                massKg: MoonMassKg,
-                soiRadiusMeters: MoonSoiRadiusMeters,
+                massKg: PhysicsConstants.MoonMassKg,
+                soiRadiusMeters: PhysicsConstants.MoonSoiRadiusMeters,
                 parentBody: earth);
 
             return moon;

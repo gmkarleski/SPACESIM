@@ -173,7 +173,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
             double a = 0.5 * (rPeri + rApo);
             double e = (rApo - rPeri) / (rApo + rPeri);
             // Sanity guard (matches the e < 0.8 design constraint).
-            Assert.Less(e, 0.8, "Test orbit eccentricity must stay below 0.8 for solver stability");
+            VesselTestHelpers.AssertSolvableEccentricity(e);
 
             var state = BuildState(a, e, trueAnomalyAtEpoch: 0.0);
 
@@ -231,7 +231,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
             double rApo = EarthMoonDistanceMeters;
             double a = 0.5 * (rPeri + rApo);
             double e = (rApo - rPeri) / (rApo + rPeri);
-            Assert.Less(e, 0.8, "Test orbit eccentricity must stay below 0.8 for solver stability");
+            VesselTestHelpers.AssertSolvableEccentricity(e);
 
             // Moon placed at (-rApo, 0, 0) — vessel's apoapsis location.
             var moon = BuildChildBody(
@@ -319,7 +319,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
             double rApo = 3.0 * HighPeriapsisRadius;  // 6e8 m
             double a = 0.5 * (rPeri + rApo);
             double e = (rApo - rPeri) / (rApo + rPeri);
-            Assert.Less(e, 0.8, "Test orbit eccentricity must stay below 0.8 for solver stability");
+            VesselTestHelpers.AssertSolvableEccentricity(e);
             double p = a * (1.0 - e * e);
 
             // Compute orbit positions at two ν values along the sweep.
@@ -414,7 +414,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
             double rApo = 1.5 * EarthSoiRadiusMeters;
             double a = 0.5 * (rPeri + rApo);
             double e = (rApo - rPeri) / (rApo + rPeri);
-            Assert.Less(e, 0.8, "Test orbit eccentricity must stay below 0.8 for solver stability");
+            VesselTestHelpers.AssertSolvableEccentricity(e);
             double p = a * (1.0 - e * e);
 
             // Earth-SOI-exit ν:
@@ -628,7 +628,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
                 double rApo = 5.0e8;
                 double a = 0.5 * (rPeri + rApo);
                 double e = (rApo - rPeri) / (rApo + rPeri);
-                Assert.Less(e, 0.8, "Test orbit eccentricity must stay below 0.8 for solver stability");
+                VesselTestHelpers.AssertSolvableEccentricity(e);
                 var state = BuildState(a, e, trueAnomalyAtEpoch: 0.0);
 
                 long? crossing = SoiCrossingPredictor.PredictNextCrossing(

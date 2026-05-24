@@ -67,7 +67,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
             double rApo = 1.0e7;
             double a = 0.5 * (rPeri + rApo);
             double e = (rApo - rPeri) / (rApo + rPeri);
-            Assert.Less(e, 0.8, "Test orbit eccentricity must stay below 0.8");
+            VesselTestHelpers.AssertSolvableEccentricity(e);
 
             var state = BuildState(a, e, trueAnomalyAtEpoch: 0.0);
 
@@ -88,7 +88,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
             double rApo = 1.0e7;
             double a = 0.5 * (rPeri + rApo);
             double e = (rApo - rPeri) / (rApo + rPeri);
-            Assert.Less(e, 0.8, "Test orbit eccentricity must stay below 0.8");
+            VesselTestHelpers.AssertSolvableEccentricity(e);
 
             // Vessel at apoapsis — far above surface, descending toward periapsis.
             var state = BuildState(a, e, trueAnomalyAtEpoch: math.PI_DBL);

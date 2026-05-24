@@ -21,10 +21,15 @@ namespace SpaceSim.Foundation.SimTick
     /// <strong>MODE-AWARE CEILINGS.</strong> The effective rate is always
     /// <c>min(currentRate, CeilingFor(ActiveVesselMode))</c>. As of commit 048
     /// Stage 2 the PhysX-active ceiling is 5× (up from the pre-commit-048 1× hard
-    /// cap); Stage 3 will introduce a forced KeplerRails transition when the
-    /// ceiling is reached, so the 5× cap becomes the trigger point rather than
-    /// the permanent ceiling. Kepler-rails and interstellar-cruise ceilings
-    /// (10,000× and 100,000×) are unchanged from the pre-commit-048 system.
+    /// cap). Force-transition (auto-promoting the active vessel to KeplerRails
+    /// when the player requests warp above the PhysX cap) was originally sketched
+    /// for commit 048 but deferred to a future commit per DECISIONS entry
+    /// 'Time-warp controller architecture (commit 048)' item (d) — current
+    /// behavior is cap-and-stay (silent clamp to 5×, vessel does not
+    /// auto-transition). The <see cref="TransitionTriggerReason"/>
+    /// <c>WarpRateForcedRails</c> enum value remains as held infrastructure for
+    /// the deferred work. Kepler-rails and interstellar-cruise ceilings (10,000×
+    /// and 100,000×) are unchanged from the pre-commit-048 system.
     /// </para>
     ///
     /// <para>
@@ -335,11 +340,13 @@ namespace SpaceSim.Foundation.SimTick
         /// caches <paramref name="info"/> in <see cref="LastHaltInfo"/>, and
         /// fires <see cref="OnWarpHalted"/> with the same payload.
         ///
-        /// <para>Stage 2 callers: target-tick-reached (internally fired by
-        /// <see cref="ComputeAnalyticIterations"/>) and manual pause from
-        /// Mission Control (Stage 4 UI). Stage 3 will add vessel-level
+        /// <para>Callers (all landed across commit 048 stages):
+        /// target-tick-reached (internally fired by
+        /// <see cref="ComputeAnalyticIterations"/>, Stage 2);
+        /// manual pause from Mission Control UI (Stage 4); vessel-level
         /// predictor-driven callers from the Vessels asmdef using the
-        /// <see cref="WarpHaltReason"/> enum's predictor-mapped values.</para></summary>
+        /// <see cref="WarpHaltReason"/> enum's predictor-mapped values
+        /// (Stage 3).</para></summary>
         public void RegisterHaltEvent(WarpHaltInfo info)
         {
             _isHalting = true;

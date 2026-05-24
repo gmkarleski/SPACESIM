@@ -219,7 +219,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
                 // co-located with the Moon — comfortably inside Moon's SOI.
                 var earthOrbitAtMoonPosition = new KeplerState
                 {
-                    SemiMajorAxis = EarthMoonDistanceMeters,
+                    SemiMajorAxis = PhysicsConstants.EarthMoonDistanceMeters,
                     Eccentricity = 0.0,
                     Inclination = 0.0,
                     LongitudeOfAscendingNode = 0.0,

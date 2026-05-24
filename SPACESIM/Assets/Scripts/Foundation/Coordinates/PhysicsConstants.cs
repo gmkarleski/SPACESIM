@@ -31,12 +31,23 @@ namespace SpaceSim.Foundation.Coordinates
     /// <para>
     /// <strong>SCOPE OF THIS FILE:</strong> contains exactly the constants
     /// that have been duplicated across the codebase plus the
-    /// degenerate-orbit threshold introduced in commit 053. Three additional
-    /// constants in <c>VesselTestHelpers</c> (<c>EarthMoonDistanceMeters</c>,
-    /// <c>MoonMassKg</c>, <c>MoonSoiRadiusMeters</c>) are deferred to fixer-bot
-    /// migration — the helper file's pattern of test-side constants doesn't
-    /// need to move now; that migration is small and adjacent rather than
-    /// on the commit 053 critical path.
+    /// degenerate-orbit threshold introduced in commit 053. The three
+    /// Moon-related constants originally declared locally in
+    /// <c>VesselTestHelpers</c> (<c>EarthMoonDistanceMeters</c>,
+    /// <c>MoonMassKg</c>, <c>MoonSoiRadiusMeters</c>) were migrated here
+    /// at commit 056 alongside the eccentricity-helper migration; the
+    /// helper file now references this central source.
+    /// </para>
+
+    ///
+    /// <para>
+    /// <strong>PRECISION RECONCILIATION (commit 056):</strong>
+    /// <c>MoonSoiRadiusMeters</c> was 6.6e7 in <c>VesselTestHelpers</c> but
+    /// 6.6183e7 here. The canonical value (6.6183e7, more precise) wins
+    /// post-056. <c>SoiCrossingPredictorTests</c> and
+    /// <c>OrbitalElementsTests</c> retain their own local
+    /// <c>MoonSoiRadiusMeters = 6.6e7</c> declarations pending a separate
+    /// fixer-bot pass — those mixed-precision sites are known and bounded.
     /// </para>
     ///
     /// <para>
@@ -74,6 +85,18 @@ namespace SpaceSim.Foundation.Coordinates
         /// body with finite SOI.
         /// </summary>
         public const double MoonSoiRadiusMeters = 6.6183e7;
+
+        // ----- Inter-body distances -----
+
+        /// <summary>
+        /// Earth-Moon mean distance in meters (3.844 × 10⁸ m). Used by
+        /// <c>VesselTestHelpers.BuildMoonAsChildOfEarth</c> to position
+        /// the Moon body relative to Earth in test-side Earth-Moon
+        /// substrates, and by any production / test code that needs the
+        /// canonical Earth-Moon separation. Migrated from
+        /// <c>VesselTestHelpers</c> local declaration at commit 056.
+        /// </summary>
+        public const double EarthMoonDistanceMeters = 3.844e8;
 
         // ----- Derived gravitational parameters -----
 
