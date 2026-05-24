@@ -450,6 +450,22 @@ The format is intentionally informal — this is internal project memory, not a 
 
 ---
 
+### Active-vessel camera-follow (commit 049)
+
+**Date:** 2026-05-23 (commit 049)
+**Question:** How should the Phase-1-validation camera in `TestVessels.unity` track the active vessel without extending the `IActiveVessel` interface or coupling the camera utility into the Vessels asmdef?
+**Decision:** Debug-utility MonoBehaviour (`ActiveVesselCameraFollow`) lives in `SpaceSim.Foundation.SimTick`. In `LateUpdate` it reads `SimTickController.Instance.ActiveVessel.GetWorldPosition()`, converts to local via `FloatingOriginManager.Instance.WorldToLocal(WorldPosition)`, and assigns `transform.position = localPos.Value + _offset`. Rotation untouched. Inspector `_offset` Vector3 with default `(0, 5, -20)`. Null-safe at every level (controller, active vessel, origin manager) with once-per-lifetime warnings matching `SimTickController.Step6_DetectModeTransitions` discipline.
+**Alternatives rejected:**
+- **Path B — register the camera as a `FloatingOriginAnchor` and follow the active vessel's `Transform` directly.** Would require extending `IActiveVessel` with a `Transform` accessor (cross-asmdef API change) or casting to concrete `Vessel` (defeats the interface). Unjustified cost for a debug-only camera; defeats the narrow-interface design rationale already documented on `IActiveVessel`.
+- **Camera rotation tracking / `LookAt`** — a debug camera that snaps rotation can disorient. Position-only follow is the conservative default; the scene author sets the look direction once at Inspector time and the follow logic preserves it.
+- **Smoothing / damping / lerp** — snap-follow is fine for visual validation; smoothing introduces visible lag and complicates the "did the origin shift mid-frame?" diagnostic by hiding the discontinuity test wants to see.
+- **Vessel-switch input / hotkey** — out of scope (no active-vessel-switch UI exists yet per `docs/phase1_validation_readiness.md` System 12). The camera follows whichever vessel `SimTickController.SetActiveVessel` was last called with; switching is a separate future commit.
+**Rationale (narrow utility, single conversion path):** `FloatingOriginManager.WorldToLocal` is the same `CoordinateMath.WorldToLocal` math that `FloatingOriginAnchor` implicitly relies on across shifts. One conversion source-of-truth means mid-frame origin shifts (which fire synchronously inside Step 6 before `LateUpdate` runs the same frame) are handled correctly without the camera needing to register as an anchor itself. No architectural pillar moves: `IActiveVessel` interface unchanged; asmdef direction `Coordinates ← SimTick ← Vessels` preserved; production gameplay camera (orbit / chase / cinematic modes, mouse + scroll input, FOV control, damping) is Phase 3 work and replaces this utility when it lands.
+**Implication:** Phase 1 visual validation unblocked. The vessel stays centered in view across floating-origin shifts during Play, removing the dependency on Canvas diagnostic UI for visual feedback. First of three commits identified in `docs/phase1_validation_readiness.md` Section C; the remaining two (multi-body Play scene, Phase 1 validation milestone artifact) are independent commits.
+**Locked in:** commit 049.
+
+---
+
 ## Pending decisions (open questions still in `docs/CONSTRAINTS.md` §10)
 
 This section mirrors §10's open questions so a reader can find both resolved and pending decisions in one place. When an entry here lands a decision, it moves to "Resolved decisions" above and gets removed from this section.
