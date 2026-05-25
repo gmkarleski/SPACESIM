@@ -38,17 +38,6 @@ namespace SpaceSim.Foundation.Coordinates
     /// at commit 056 alongside the eccentricity-helper migration; the
     /// helper file now references this central source.
     /// </para>
-
-    ///
-    /// <para>
-    /// <strong>PRECISION RECONCILIATION (commit 056):</strong>
-    /// <c>MoonSoiRadiusMeters</c> was 6.6e7 in <c>VesselTestHelpers</c> but
-    /// 6.6183e7 here. The canonical value (6.6183e7, more precise) wins
-    /// post-056. <c>SoiCrossingPredictorTests</c> and
-    /// <c>OrbitalElementsTests</c> retain their own local
-    /// <c>MoonSoiRadiusMeters = 6.6e7</c> declarations pending a separate
-    /// fixer-bot pass — those mixed-precision sites are known and bounded.
-    /// </para>
     ///
     /// <para>
     /// <strong>FUTURE EXPANSION:</strong> as additional physics constants

@@ -22,12 +22,16 @@ namespace SpaceSim.Foundation.Coordinates
         /// <summary>
         /// Newton's gravitational constant, m³ / (kg · s²).
         ///
-        /// Lives here in Phase 0 because there's exactly one physical constant in the codebase
-        /// and a new <c>Foundation/Physics/PhysicsConstants.cs</c> module would be over-engineering
-        /// for one value. When the Physics module lands (post-Phase 0, when atmospheric drag /
-        /// thrust / multi-body gravity all need physical constants), <see cref="G"/> moves there
-        /// alongside its siblings (atmospheric scale heights, atmospheric reference densities,
-        /// the speed of light for interstellar-cruise relativistic corrections, etc.).
+        /// Lives in <c>CoordinateMath</c> as the project's single source-of-truth
+        /// for G. <see cref="SpaceSim.Foundation.Coordinates.PhysicsConstants"/>
+        /// (added at commit 053-stage2) holds body-specific physical constants
+        /// (masses, SOI radii, surface radii, inter-body distances) and
+        /// references <see cref="G"/> when deriving μ-values
+        /// (e.g. <c>PhysicsConstants.EarthMu = G · EarthMassKg</c>). The
+        /// import direction is <c>PhysicsConstants</c> → <c>CoordinateMath</c>;
+        /// G is not duplicated in <c>PhysicsConstants</c>. See the
+        /// <see cref="PhysicsConstants"/> preamble for the canonical
+        /// articulation of this split.
         ///
         /// Used by <c>SpaceSim.Foundation.Vessels.ReferenceBody.Mu</c> to compute the standard
         /// gravitational parameter μ = G · M for orbital-element calculations.

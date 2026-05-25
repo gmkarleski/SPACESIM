@@ -61,11 +61,15 @@ namespace SpaceSim.Foundation.SimTick
     /// </para>
     ///
     /// <para>
-    /// <strong>STAGE 2 SCOPE.</strong> The controller exists but is not yet
-    /// instantiated in any scene (Stage 4 adds the scene wiring). When
-    /// <see cref="Instance"/> is null, <see cref="SimTickController"/> falls
-    /// back to single-tick advancement — production behavior at scene start
-    /// stays identical to pre-commit-048.
+    /// <strong>SCENE WIRING.</strong> Scene wiring landed at commit 048
+    /// Stage 4: <c>TestVessels.unity</c> instantiates <see cref="WarpController"/>
+    /// alongside <see cref="SpaceSim.Foundation.SimTick.UI.WarpUIController"/>
+    /// (pause/resume, seven discrete-rate buttons, continuous slider,
+    /// clear-halt). When <see cref="Instance"/> is null (non-Unity test
+    /// contexts or scenes without the WarpController GameObject),
+    /// <see cref="SimTickController"/> falls back to single-tick
+    /// advancement; production scenes run under the rational-rate
+    /// machinery throughout.
     /// </para>
     /// </summary>
     [DisallowMultipleComponent]

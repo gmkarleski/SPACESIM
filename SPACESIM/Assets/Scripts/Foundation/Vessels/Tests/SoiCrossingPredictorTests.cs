@@ -31,7 +31,7 @@ namespace SpaceSim.Foundation.Vessels.Tests
         private static readonly double EarthMu = PhysicsConstants.EarthMu;
         private const double EarthSoiRadiusMeters = 9.24e8;  // Real Earth heliocentric SOI ~924,000 km
         private const double MoonMassKg = 7.342e22;
-        private const double MoonSoiRadiusMeters = 6.6e7;    // Real Moon SOI ~66,100 km
+        private const double MoonSoiRadiusMeters = PhysicsConstants.MoonSoiRadiusMeters;
         private const double EarthMoonDistanceMeters = 3.844e8;
         private const double TickIntervalSeconds = 1.0 / 30.0;  // 30 Hz sim-tick
 

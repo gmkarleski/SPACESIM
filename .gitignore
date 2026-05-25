@@ -96,3 +96,13 @@ $RECYCLE.BIN/
 # (see commits/README.md for the workflow rule context)
 # ------------------------------------------------------------------------------
 *.recovery
+
+# ------------------------------------------------------------------------------
+# Working files / drafts
+# Diff captures from review passes and draft markdown files awaiting integration
+# into docs/. Both are local-scratch shapes that should not enter version
+# control; durable equivalents live in the repo's commit history (diffs) and
+# in `docs/` (integrated content).
+# ------------------------------------------------------------------------------
+diff_*.txt
+*_draft.md

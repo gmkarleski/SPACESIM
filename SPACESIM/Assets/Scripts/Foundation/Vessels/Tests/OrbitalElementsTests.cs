@@ -313,10 +313,10 @@ namespace SpaceSim.Foundation.Vessels.Tests
         private const double MoonMassKg = 7.342e22;
         private static readonly double MoonMu = CoordinateMath.G * MoonMassKg;
 
-        // Moon SOI radius for reference (Laplace sphere ≈ 6.6e7 m); used in test 2 to
-        // place the vessel just beyond Moon's SOI but well within Earth's frame of
-        // gravitational dominance.
-        private const double MoonSoiRadiusMeters = 6.6e7;
+        // Moon SOI radius — references the canonical value in PhysicsConstants;
+        // used in test 2 to place the vessel just beyond Moon's SOI but well
+        // within Earth's frame of gravitational dominance.
+        private const double MoonSoiRadiusMeters = PhysicsConstants.MoonSoiRadiusMeters;
 
         // Body Guids for the test scene. Constants so tests can verify the helper
         // correctly assigns NewBodyId to the output KeplerState.
