@@ -541,6 +541,84 @@ The format is intentionally informal — this is internal project memory, not a 
 
 ---
 
+### Phase 2 Track B entry — seed versioning + Stage 1 input contract + Sol-equivalent stellar parameters (commit 058)
+
+**Date:** 2026-05-25
+**Question:** Three load-bearing decisions to lock before Phase 2 Track B (per-planet procgen) implementation begins: (D1) seed function versioning mechanism per CONSTRAINTS §9 line 1759's "from day one" mandate; (D2) Stage 1 (stellar context) input contract — what fields the per-body pipeline receives as input, given Stage 1's source (galaxy-level Layer 3) is Phase 7 work; (D3) hand-tuned Sol-equivalent stellar parameters that satisfy D2's contract, so Phase 2 home-system work has concrete values to consume.
+**Decision:** Three locked decisions.
+
+**D1 — Seed function versioning is monolithic integer, save-file metadata + code constant, with discipline that existing saves keep producing the same world across version bumps.** Full mechanism specified in `docs/world/SEED_VERSIONING.md` (new file added at this commit). Summary: monotonic integer `CurrentSeedVersion` starting at 1, persists as `procgen_seed_version: int` in save metadata, code retains historical seed functions to dispatch to for old saves, version bump fires on any procgen-output-altering change. Hash function for hierarchical seed derivation deferred to Phase 7 (Layer 1-2 / Layer 4 scope). Per-layer or per-stage version granularity deferred as future expansion if needed.
+
+**D2 — Stage 1 input contract: 8 inputs, 5 derived, 13 fields stored on a star body after Stage 1 completes.**
+
+*Inputs from eventual Layer 3 (hand-tuned for Phase 2 home system; procgen-generated in Phase 7):*
+
+- `mass` — kg
+- `age` — years since formation
+- `spectral_class` — broad letter (O / B / A / F / G / K / M / brown dwarf / white dwarf / neutron star)
+- `magnetic_activity_index` — dimensionless [0, 1] scale
+- `flare_frequency` — flares per unit time
+- `rotation_rate` — period in days
+
+*Inputs from eventual Layer 1-2 (hand-tuned for Phase 2 home system; procgen-generated in Phase 7):*
+
+- `metallicity` — dimensionless [Fe/H] log scale relative to Sol
+- `system_position` — galactic coordinates (x, y, z) in light-years from galactic center
+
+*Derived in Stage 1 from the 8 inputs:*
+
+- `radius` — m, function of mass and spectral_class (mass-radius relation per main-sequence class)
+- `luminosity` — W, function of mass and age (Stefan-Boltzmann + main-sequence luminosity scaling)
+- `surface_temperature` — K, function of luminosity and radius (Stefan-Boltzmann inversion)
+- `spectral_peak` — m, function of surface_temperature (Wien's displacement)
+- `stellar_type` — specific subclass (e.g., G2V), function of mass + age + spectral_class
+
+Stage 2 (planetary core parameters) reads from the 13-field stellar state. Specific algorithms for the 5 derivation functions are NOT locked at 058 — they're filled in when Stage 1 implementation lands (a later commit).
+
+**D3 — Sol-equivalent stellar parameters (hand-tuned static values for the home star, satisfying D2's contract):**
+
+*Inputs (8):*
+
+- `mass` = 1.989e30 kg (real Sun mass)
+- `age` = 4.6e9 years (real Sun age)
+- `spectral_class` = "G"
+- `magnetic_activity_index` = 0.3 (mid-band; real Sun varies 0.1-0.5 across 11-year cycle)
+- `flare_frequency` = 0 per year (Sol-equivalent treated as quiescent at v1; flare frequency is a knob for varying stars in Phase 7)
+- `rotation_rate` = 25.4 days (real Sun equatorial rotation period)
+- `metallicity` = 0.0 (Sol-equivalent is the metallicity reference)
+- `system_position` = (0, 0, 0) ly (the home system is the origin of galactic coordinates in v1; absolute galactic position is a Phase 7 cosmological-context concern)
+
+*Derived values (informational; not locked as regression targets):*
+
+- `radius` ≈ 6.96e8 m
+- `luminosity` ≈ 3.828e26 W
+- `surface_temperature` ≈ 5778 K
+- `spectral_peak` ≈ 5.02e-7 m (visible-spectrum peak ~502 nm)
+- `stellar_type` = "G2V"
+
+These are real solar values; they describe what Sol-equivalent should look like after Stage 1 completes, so the reader of this DECISIONS entry knows the target shape. Stage 1's implementation (a later commit) chooses derivation formulas — likely mass-radius relations, main-sequence luminosity scaling, Stefan-Boltzmann, Wien's displacement — and those formulas produce values close to the listed numbers but not necessarily exactly. The implementation commit decides its own correctness criteria (e.g., "within stated tolerance of real solar parameters").
+
+The hand-tuned input values match real solar parameters because the home system is Earth-equivalent per CONSTRAINTS §3 line 435 ("Solar flux at the home planet tuned to Earth-equivalent; scales with real distance from star from there").
+
+**Alternatives rejected:**
+
+- **Stage 1 receives only 6 cascade inputs per §6 line 1455's literal enumeration (D2).** §6 line 1455 lists 6 cascade fields (mass, luminosity, spectral class, age, magnetic activity, flare frequency); the per-body parameter set at §6 line 1520 has 12 fields. Adopting the 6-field reading would defer the question of where the other fields come from. Rejected because the hybrid decomposition (8 inputs + 5 derived) names what comes from where, which is what an input contract is for. The 6-field reading also confuses inputs with derived values (luminosity is naturally derived from mass + age, not provided as input).
+- **Stage 1 receives the full 12-field per-body parameter set as input from Layer 3 (D2).** Defers derivation responsibility to Layer 3 (Phase 7). Rejected because derivation belongs in Stage 1 where the cascade is — moving it earlier makes Layer 3's scope larger than necessary and couples Phase 7's design to Phase 2's parameter shape.
+- **Minimal Layer 3 stub in Phase 2 instead of hand-tuned static data for home system (D3).** Implementing a Phase-7-shaped Layer 3 stub now (even hardcoded for one star) is more architectural commitment than Phase 2 needs. Hand-tuned static data is simpler, doesn't pre-commit to Layer 3's interface shape, and is straightforward to migrate when Phase 7 lands real Layer 3.
+- **Opaque-input contract for Stage 1 (D3).** Treating stellar context as an opaque blob adds indirection without payoff at Phase 2. The explicit field-by-field contract is more honest and surfaces the cross-layer dependencies clearly.
+- **Lock the Sol-equivalent derived values as regression-test targets that Stage 1 implementation must reproduce exactly (D3).** Constrains Stage 1's algorithm choice in ways that may not be satisfiable — real solar parameters don't fall cleanly out of simple derivation formulas (the Sun's actual luminosity requires age-dependent corrections; mass-radius relations are approximate for main-sequence stars; spectral peak from Wien's law assumes exact surface_temperature). Locking derived values would force Stage 1 to either hardcode them for Sol (defeating the cascade purpose), use derivation formulas tuned to match Sol exactly (coupling formula choice to one data point), or tolerate drift (defeating the regression-test claim). Rejected. Inputs are locked; derived values are informational. Stage 1 implementation commit decides its own correctness criteria.
+- **Per-layer or per-stage seed version granularity from day one (D1).** Premature complexity. Phase 2 has one layer (Layer 5) and a small number of stages in scope; monolithic versioning is sufficient. Granularity can expand later if needed; collapsing it is harder.
+- **Semver or date-tagged version format (D1).** Overkill for the granularity required. Monotonic integer is the simplest format that satisfies the §9 mandate.
+- **Defer seed versioning to when first procgen output ships (D1).** §9 line 1759 mandates "in place from day one." Deferring contradicts the explicit ordering claim. Locking the mechanism now (with no code yet) costs nothing and prevents a retrofit later.
+
+**Rationale (smallest decisive design commit; lock load-bearing things while the frame is fresh):** Three locked decisions form the minimum foundation for Stage 2 (and subsequent stages) to be specified against known boundaries. D1 satisfies §9's "from day one" mandate at the minimum sufficient granularity. D2 names the Stage 1 input boundary explicitly so future Stage 2-14 specs reference a locked input shape. D3 provides concrete Sol-equivalent values so Phase 2 home-system implementation has data to consume, while keeping the Phase-7-deferred-Layer-3 abstraction clean (hand-tuned static data IS the Phase 2 substitute for Layer 3 output; Phase 7 will replace the static data with Layer 3 generation).
+
+**Implication:** Subsequent commits (059+) specify Stage 2 (planetary core parameters) and beyond — each stage's input contract is the prior stage's output (the 13 fields locked here, for Stage 2's case), and algorithm specifics fill in within the locked frame. Code lands when enough stages are specified to validate a meaningful end-to-end body generation; that threshold is a Phase 2 sub-decision not locked at 058. Track A (vessel construction) can begin in parallel with Track B's stage-specification work — both must close for Phase 2 exit per §9 phase-exit criteria.
+
+**Locked in:** commit 058.
+
+---
+
 ## Pending decisions (open questions still in `docs/CONSTRAINTS.md` §10)
 
 This section mirrors §10's open questions so a reader can find both resolved and pending decisions in one place. When an entry here lands a decision, it moves to "Resolved decisions" above and gets removed from this section.
