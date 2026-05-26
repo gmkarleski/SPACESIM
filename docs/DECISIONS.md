@@ -649,6 +649,42 @@ The hand-tuned input values match real solar parameters because the home system 
 
 ---
 
+### Phase 2 Track B first sub-object — stellar state decomposition + 059 universal-flat revision (commit 060)
+
+**Date:** 2026-05-25
+**Question:** Three coupled decisions for the first per-sub-object design pass in Phase 2 Track B: (D1) revise 059's universal flat field list based on subsequent examination — Position isn't a body-state field; (D2) decompose the stellar state — the 9 stellar-specific fields out of 058's Stage 1 contract — into specific sub-objects on BodyState; (D3) decide where `system_position` from 058's contract lives in the schema.
+**Decision:** Three locked decisions.
+
+**D1 — 059's universal flat field list revised based on subsequent examination: Position removed; 9 fields instead of 10.** Revised list: BodyId, Seed, Name, ParentBodyId, Mass, Radius, SoiRadius, RotationRate, AxialTilt. A body's position isn't a stored body-state property. For top-level bodies, position is trivially the system origin (zero by definition). For orbiting bodies, position is derived from OrbitalDynamics + the current sim-tick — a runtime computation, not stored schema state. The existing `WorldPosition` type remains the canonical in-system position representation, computed on demand. PROCGEN_DESIGN.md "Shared flat fields" section updated at this commit to reflect the revision.
+
+**D2 — Stellar state decomposes into three sub-objects on BodyState: StellarEmission, StellarActivity, StellarComposition.** Field assignments per `docs/world/PROCGEN_DESIGN.md` "Stellar state (commit 060)" section:
+
+- StellarEmission (5 fields): luminosity, surface_temperature, spectral_peak, stellar_type, spectral_class
+- StellarActivity (2 fields): magnetic_activity_index, flare_frequency
+- StellarComposition (2 fields): age, metallicity
+
+Decomposition rationale: usage clusters in downstream code (detection/flux reads emission; magnetosphere/aurora reads activity; system-wide concerns read composition). Each sub-object is small enough to be coherent, large enough to justify being its own sub-object. The "Stellar*" naming is generous — includes sub-stellar (brown dwarfs) and post-stellar (neutron stars / pulsars) regimes. Non-emitting bodies (planets, moons, asteroids) have all three sub-objects null.
+
+**D3 — `system_position` from 058's contract is deferred from BodyState to a future system-level data structure (Phase 7).** 058 framed system_position as a Layer-1-2 input for stellar parameter generation, but it's substantively a SYSTEM-level coordinate (where the whole star system sits in the galaxy), not a star property. For Phase 2's single-system scope, system_position is functionally redundant — only one system exists, it's the galactic origin (0, 0, 0) by definition. Phase 7 multi-system work introduces a system-level data structure that holds system-level data including galactic position. Commit 060 does not place system_position on BodyState in any of the three Stellar* sub-objects.
+
+**Alternatives rejected:**
+
+- **Keep Position on BodyState (don't revise 059) (D1).** Defensible if "Position" means "current cached position regardless of provenance." Rejected because the schema captures STATE (per the 059-locked schema-vs-code principle), and a body's position isn't stored state — it's runtime computation derived from orbital state plus sim-tick (for orbiting bodies) or trivially zero (for top-level bodies). Storing it on BodyState would either be redundant (top-level case) or stale (orbiting case — the stored value would drift from the orbital-state-derived value at every sim-tick). The existing WorldPosition type remains the canonical representation; ReferenceBody-or-its-successor computes it on demand.
+- **One combined StellarState sub-object holding all 9 stellar fields (D2).** Smaller schema surface, less ceremony. Rejected because the 9 fields cluster into three usage-pattern groups (emission, activity, composition) that downstream code reads independently. Combining them forces every reader of one cluster to traverse fields it doesn't care about and increases the risk of incidental coupling. Three sub-objects give the right granularity for the usage clusters that exist.
+- **Two sub-objects (emission + activity, with composition merged into one of them) (D2).** Less granular than three. Rejected because metallicity and age affect stellar parameters but aren't themselves emission or activity properties — they're more fundamental composition / age inputs. Grouping them with emission or activity would force readers of those clusters to also pull in unrelated composition data. Three sub-objects is the smallest decomposition that doesn't mix usage clusters.
+- **More than three sub-objects (separate sub-object per field, or finer-grained groupings) (D2).** More ceremony, less coherence. Rejected because the three usage clusters are well-defined and further subdivision wouldn't track any natural downstream-code separation.
+- **Place system_position in StellarComposition (D3).** 058 framed it as a stellar parameter input. Defensible — Layer 1-2 region-effects-on-metallicity per §6 line 1442. Rejected because system_position is substantively a SYSTEM-level coordinate (every body in a multi-body system shares it; it's a property of the system not of any one body). Phase 7 multi-system work will introduce a system-level data structure where it belongs. Storing it per-body in StellarComposition would be duplicative at Phase 7 and adds no value at Phase 2 (single system, trivial value).
+- **Universal-flat-conditional field on BodyState (system_position populated only on top-level bodies, null elsewhere) (D3).** Considered as a third option. Rejected because conditional universal-flat fields break the "universal = always present" framing of 059's flat-field design. Either a field is universal (every body has it) or it isn't (some sub-object holds it). Hybrid breaks the schema's clarity.
+- **Amend 058's contract at commit 060 to add axial_tilt and convert rotation_rate units (Findings A + B).** Defensible — the contract IS incomplete with respect to axial_tilt, and the units mismatch is real. Rejected as 060-scope expansion. 058's contract documents the Stage 1 input contract at the time; subsequent amendments belong in their own commits. 060 documents both findings in PROCGEN_DESIGN.md without amending 058.
+
+**Rationale (lock the first sub-object design; revise 059's universal-flat list based on subsequent examination; defer system-level concerns to system-level work):** The three locked decisions advance Phase 2 Track B's sub-object design pass while revising 059 based on subsequent examination (Position) and deferring a misplaced field (system_position) to where it actually belongs (Phase 7 system-level structure). The stellar state is the first sub-object to land its decomposition, continuing 058's Stage 1 thread. Subsequent commits (061+) design the next sub-object using the same per-commit pattern.
+
+**Implication:** Subsequent commits (061+) design other sub-objects. Natural next: orbital dynamics (most bodies have one; orbital mechanics well-understood from existing Vessels work; will hold TidalLockState that 059 noted as the rotation-orbit relational property). After that, atmospheric / surface / etc. as per-sub-object commits. Stage 1 implementation (a later, separate commit) reads stellar state from the three Stellar* sub-objects. Findings A (RotationRate unit conversion at Stage 1 boundary) and B (AxialTilt gap in 058's Layer 3 inputs) documented in PROCGEN_DESIGN.md but not amended in 058 at this commit. System-level data structure design is Phase 7 work; system_position migrates to it then.
+
+**Locked in:** commit 060.
+
+---
+
 ## Pending decisions (open questions still in `docs/CONSTRAINTS.md` §10)
 
 This section mirrors §10's open questions so a reader can find both resolved and pending decisions in one place. When an entry here lands a decision, it moves to "Resolved decisions" above and gets removed from this section.

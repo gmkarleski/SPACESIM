@@ -62,9 +62,9 @@ The two pipelines are not manifestly the same pipeline at different levels of ab
 
 **LOCKED:** `BodyState` is a single sealed C# class containing flat shared fields plus nullable domain sub-objects plus named-nullable feature subsystems. No inheritance hierarchy. No polymorphic feature dictionary. Per-body type asymmetries (star vs planet vs moon vs asteroid) are expressed by WHICH sub-objects are populated, not by class type.
 
-### Shared flat fields — locked at 059
+### Shared flat fields — locked at 059, revised at 060
 
-Ten physics-universal fields, present on every body regardless of type. These are the universal physical properties any body in space has; their inclusion isn't a design decomposition decision.
+Nine physics-universal fields, present on every body regardless of type. These are the universal physical properties any body in space has; their inclusion isn't a design decomposition decision.
 
 ```
 BodyState (sealed, POCO):
@@ -76,7 +76,6 @@ BodyState (sealed, POCO):
                                   // versioning mechanism.
   Name           : string         // Player-facing name; hand-tuned for home system,
                                   // procgen for galaxy-beyond.
-  Position       : WorldPosition  // Galactic double-precision coordinates.
   ParentBodyId   : Guid           // Empty for top-level body (star at root of its system).
   Mass           : double         // kg.
   Radius         : double         // m. For stars, the photospheric radius.
@@ -87,6 +86,8 @@ BodyState (sealed, POCO):
 
   // ... domain sub-objects + feature subsystems + signatures (structure below)
 ```
+
+**Position removed at commit 060.** A body's position isn't a stored body-state property. For top-level bodies, position is trivially the system origin (zero by definition). For orbiting bodies, position is derived from `OrbitalDynamics` plus the current sim-tick — a runtime computation, not stored schema state. The existing `WorldPosition` type remains the canonical in-system position representation; it's computed on demand from orbital state or fixed-at-zero, never stored on BodyState. This revises 059's initial flat-field enumeration based on subsequent examination — body position isn't time-invariant for orbiting bodies and isn't meaningful-as-stored-state for top-level bodies.
 
 ### Schema structure — locked at 059, specific decomposition NOT locked
 
@@ -169,6 +170,54 @@ The shape's value comes from how it handles body-type variation through sub-obje
 - A brown dwarf: emission sub-object(s) populated (low luminosity); orbital sub-object populated or null; possibly magnetosphere-shaped state; possibly atmospheric-shaped state. Hybrid object that composition handles gracefully — a strict star-vs-planet class hierarchy would struggle to classify it; composition just populates whatever sub-objects apply.
 
 The brown dwarf case is the strongest illustration of why composition over inheritance: real astrophysics has body-type edge cases that don't fit a clean binary. Composition treats every body as "whatever sub-objects are populated" without forcing a type choice.
+
+## Per-sub-object designs
+
+Each sub-object's design lands as its own commit. This section accumulates the locked sub-object decompositions and their internal field assignments.
+
+### Stellar state (commit 060)
+
+The body's stellar state — applicable to stars, brown dwarfs, neutron stars, pulsars, and other emitting / sub-stellar objects — is decomposed into three sub-objects on BodyState.
+
+**Sub-object decomposition:**
+
+- `StellarEmission : StellarEmissionState?` — what the body emits and how.
+  - `luminosity` — total radiative power output, W
+  - `surface_temperature` — K
+  - `spectral_peak` — m, wavelength of peak emission (Wien's displacement)
+  - `stellar_type` — specific subclass (e.g., G2V), function of mass + age + spectral_class
+  - `spectral_class` — broad letter (O / B / A / F / G / K / M / brown dwarf / white dwarf / neutron star)
+
+- `StellarActivity : StellarActivityState?` — magnetic and dynamical activity.
+  - `magnetic_activity_index` — dimensionless [0, 1] scale
+  - `flare_frequency` — flares per unit time
+
+- `StellarComposition : StellarCompositionState?` — fundamental composition and age.
+  - `age` — years since formation
+  - `metallicity` — dimensionless [Fe/H] log scale relative to Sol
+
+**Sub-object presence:**
+
+- Stars (main-sequence, giant, supergiant, white dwarf, neutron star): all three populated.
+- Brown dwarfs: all three populated, with values reflecting sub-stellar regime (very low luminosity, low or absent magnetic activity, low metallicity in some cases).
+- Pulsars: all three populated, with values reflecting post-supernova regime (X-ray peak emission, extreme magnetic activity, near-zero hydrogen).
+- Non-emitting bodies (planets, moons, asteroids): all three null.
+
+**Why three sub-objects:**
+
+Usage clusters in downstream code. Detection / flux calculations read emission. Magnetosphere / aurora calculations read activity. System-wide / galactic-context concerns read composition. Each sub-object is small enough to be coherent and large enough to justify being its own sub-object.
+
+The "Stellar*" naming acknowledges that "stellar" here is generous — includes sub-stellar (brown dwarfs) and post-stellar (neutron stars / pulsars) objects. If a non-stellar body needs emission or activity properties later (e.g., a body with significant reflected-light emission separate from stellar emission), that becomes its own sub-object then.
+
+**Provenance:**
+
+The sub-object fields don't distinguish inputs (Layer 3 / Layer 1-2) from derived (Stage 1) — the schema captures values, not provenance. Per the schema-vs-code principle, provenance is pipeline-side knowledge. A future Stage 1 implementation reads inputs from somewhere, applies derivation formulas, populates all 9 stellar fields. The schema doesn't care whether a given field was input-by-hand-tuning or computed-by-formula.
+
+**`system_position` from 058's contract is NOT placed on BodyState.** 058 framed `system_position` as a Layer-1-2 input for stellar parameter generation, but it's substantively a SYSTEM-level coordinate (where the whole star system sits in the galaxy), not a star property. For Phase 2's single-system scope it's functionally redundant — only one system exists, it's the galactic origin (0, 0, 0) by definition. Phase 7 multi-system work introduces a system-level data structure (e.g., `SystemState`) that holds system-level data including galactic position; `system_position` migrates there. Commit 060 defers it; it doesn't appear on BodyState in any of the three Stellar* sub-objects.
+
+**Finding A — RotationRate unit conversion at Stage 1 boundary.** 058's contract uses "period in days" for `rotation_rate`; 059's universal flat `RotationRate` uses radians per second. The two representations are conversions of the same physical quantity. Stage 1's implementation (when it lands) converts at the pipeline-schema boundary — Layer 3 input format is days; storage format is rad/s. Sol's 25.4-day rotation period from 058 D3 corresponds to ~2.86e-6 rad/s in storage.
+
+**Finding B — AxialTilt gap in 058's Layer 3 inputs.** 058's Stage 1 input contract enumerates 6 Layer 3 inputs but `axial_tilt` is not among them. 059's universal flat fields include `AxialTilt` as intrinsic (applies to every body). The Stage 1 input contract is incomplete with respect to axial_tilt — either the contract should be amended to include it as a Layer 3 input, OR axial_tilt is provided through a different layer not yet specified, OR Phase 2 hand-tunes axial_tilt for Sol-equivalent (real Sun axial tilt ≈ 7.25°) without it being in the input contract. Commit 060 does not amend 058; it notes the gap. Future contract-amendment work or Phase 7 Layer 3 implementation closes the gap.
 
 ## Schema-vs-code principle
 
