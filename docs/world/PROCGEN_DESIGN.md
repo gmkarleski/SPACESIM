@@ -219,6 +219,68 @@ The sub-object fields don't distinguish inputs (Layer 3 / Layer 1-2) from derive
 
 **Finding B — AxialTilt gap in 058's Layer 3 inputs.** 058's Stage 1 input contract enumerates 6 Layer 3 inputs but `axial_tilt` is not among them. 059's universal flat fields include `AxialTilt` as intrinsic (applies to every body). The Stage 1 input contract is incomplete with respect to axial_tilt — either the contract should be amended to include it as a Layer 3 input, OR axial_tilt is provided through a different layer not yet specified, OR Phase 2 hand-tunes axial_tilt for Sol-equivalent (real Sun axial tilt ≈ 7.25°) without it being in the input contract. Commit 060 does not amend 058; it notes the gap. Future contract-amendment work or Phase 7 Layer 3 implementation closes the gap.
 
+### Orbital dynamics (commit 061)
+
+A body's orbital state — its position-in-orbit-around-parent — is held in a single sub-object `OrbitalDynamics : OrbitalDynamicsState?` on BodyState. Null for top-level bodies (the star at the root of a star system, whose `ParentBodyId` is `Guid.Empty` per 059 universal-flat semantics).
+
+**Sub-object structure:**
+
+`OrbitalDynamicsState` (sealed POCO):
+
+- `SemiMajorAxis : double` — a, meters. Negative for hyperbolic trajectories (rare for bodies but possible for captured/escaping cases).
+- `Eccentricity : double` — e, dimensionless. 0 = circular, 0 < e < 1 = elliptical, e ≥ 1 = hyperbolic.
+- `Inclination : double` — i, radians [0, π]. Relative to the parent body's reference plane.
+- `LongitudeOfAscendingNode : double` — Ω, radians [0, 2π). Per `OrbitalElements.cs` convention: Ω = 0 for equatorial orbits.
+- `ArgumentOfPeriapsis : double` — ω, radians [0, 2π). Per `OrbitalElements.cs` convention: ω = 0 for circular orbits.
+- `TrueAnomalyAtEpoch : double` — ν₀, radians [0, 2π). Position of the body along its orbit at `EpochTick`.
+- `EpochTick : long` — sim-tick at which the orbital elements were captured. Subsequent positions computed by propagating from this tick.
+- `ReferenceBodyId : Guid` — parent body whose gravity defines the orbit. Same field semantics as `KeplerState.ReferenceBodyId`.
+- `TidalLockState : bool` — true if the body is tidally locked to its parent (rotation period equals orbital period, same face permanently toward parent). False otherwise.
+
+**Sub-object presence:**
+
+- Top-level bodies (star at system root): `OrbitalDynamics` null.
+- Orbiting bodies (planets around stars, moons around planets, asteroids in orbits): `OrbitalDynamics` populated.
+- Captured / escape-trajectory bodies (hyperbolic, e ≥ 1): `OrbitalDynamics` populated with negative semi-major axis. Per `OrbitalElements.cs` edge-case conventions.
+
+**Why a distinct `OrbitalDynamicsState` type (rather than reusing `KeplerState`):**
+
+Honest semantic separation. `KeplerState` carries 8 orbital-identity fields PLUS 5 event-prediction cache fields (`NextPeriapsisTick`, `NextApoapsisTick`, `NextSoiTransitionTick`, `NextAtmosphericEntryTick`, `NextSurfaceImpactTick`) populated by `VesselEventPredictionDriver`. The caches are vessel-runtime concerns — vessels burn engines, get redirected, encounter atmospheres. Body orbits are stable on gameplay timescales; the caches don't fit.
+
+Reusing `KeplerState` would force every body to carry 5 always-null cache fields plus the runtime-state implication at every read site. A distinct `OrbitalDynamicsState` captures only what's relevant to body orbital identity.
+
+The math layer (`OrbitalElements.cs`) operates on raw doubles (semi-major axis, eccentricity, etc.) — not on the carrier struct — so the same math works for both types. No code duplication despite the type duplication.
+
+`NETCODE_CONTRACT.md §2.7`'s Phase-4-deferred field `orbital_state_around_parent: Option<KeplerState>` proposed reusing `KeplerState` for body orbital state. 061 overrides this design in favor of the distinct type, for the semantic-separation reason above. Same "documentation lags design" framing applies — §2.7 was written without explicit design intent; the actual design lives here. §2.7 is not amended at this commit; reconciliation is deferred.
+
+**TidalLockState — binary representation for Phase 2:**
+
+`TidalLockState` is a simple boolean for Phase 2. True if the body is tidally locked to its parent (rotation period equals orbital period; same face permanently toward parent). False otherwise.
+
+Real-world tidal locking has richer structure: Mercury is in 3:2 spin-orbit resonance (rotates 3 times per 2 orbits); some captured asteroids exhibit higher-order resonance; tidal evolution is continuous over geological timescales; libration (small oscillations around the locked orientation) is observable.
+
+Phase 2 home-system tidal cases are all 1:1 (Earth's Moon, hypothetical home moon to home planet) or none (planets to stars on gameplay timescales). The richer representation buys nothing at Phase 2 and adds complexity downstream code would have to handle.
+
+When Phase 7 procgen demands richer cases — Mercury-equivalent bodies, captured asteroids, sub-stellar binaries with resonant moons — `TidalLockState` migrates from boolean to a richer representation. The schema-evolution path is straightforward: `bool` → `enum { NotLocked, Synchronous }` → `struct { ResonanceRatio: (int, int)?, LibrationAmplitude: double, ... }`. For Phase 2, boolean is sufficient.
+
+**§6 Stage 3 override (documented, not amended):**
+
+`CONSTRAINTS.md §6` Stage 3 enumerates orbital and rotational parameters as: "Semi-major axis, eccentricity, inclination, rotation period, axial tilt, tidal-lock state." That's only 3 of the 6 classical orbital elements (a, e, i); it omits Ω, ω, ν₀ — the angle elements that orient the orbit in 3D and place the body on it.
+
+This is the same "inherited Claude-text incompleteness" pattern observed at §6 Stage 1 (6 stellar-context fields vs the 12-field per-body parameter set at §6 line 1520). 061 implicitly overrides §6 Stage 3 with the full 6-element representation per `OrbitalElements.cs` precedent. §6 itself is not amended at this commit — part of deferred pipeline-reconciliation work.
+
+**No event-prediction caches on OrbitalDynamicsState:**
+
+Schema captures stable orbital identity. Event-prediction caches (when does this body next reach periapsis, eclipse another body, cross a sibling's SOI, etc.) are runtime / driver concerns, not body-state. If body event prediction becomes useful in a future phase (multi-body eclipses, transient sibling-SOI crossings, etc.), that's a separate sub-object designed when the use case is concrete.
+
+Same schema-vs-code split principle as the rest of 059's design: schema captures STATE, code captures LOGIC. Caches sit in code (runtime driver state), not schema (body-state).
+
+**Phase 7 binary-system handling deferred:**
+
+For Phase 2 single-star home system, `ReferenceBodyId` pointing at a parent body is sufficient — every body orbits its parent, parents are non-binary, math is straightforward.
+
+For Phase 7 binary stars (or binary-asteroid systems, etc.), bodies orbit a barycenter rather than either individual parent. Schema options for handling that — synthetic-barycenter body pattern, discriminator field, or another approach — are deferred until binary systems are an actual concern. 061 doesn't anticipate; `ReferenceBodyId` pointing at parent is the Phase 2 design. Phase 7 invents what it invents.
+
 ## Schema-vs-code principle
 
 **LOCKED:** The schema describes what a body IS. Code describes how a body gets its state, when activation rules fire, what anti-correlation rules apply, what cascade order produces what.
@@ -253,4 +315,4 @@ This is the same principle that drives VesselAuthoritativeState's separation fro
 
 ## When this design retires
 
-The composition-all-the-way-down shape is locked. Specific sub-object decomposition, naming, and internal contents will evolve as individual sub-object designs land. If a future design pass surfaces that the shape itself is wrong (e.g., we need inheritance after all, or features should be a dictionary after all), that's a major DECISIONS-level reversal with its own commit and rationale.
+The composition-all-the-way-down shape is locked. Specific sub-object decomposition, naming, and internal contents will evolve as indiv

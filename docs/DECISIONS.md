@@ -685,6 +685,37 @@ Decomposition rationale: usage clusters in downstream code (detection/flux reads
 
 ---
 
+### Phase 2 Track B second sub-object — orbital dynamics decomposition (commit 061)
+
+**Date:** 2026-05-25
+**Question:** Three coupled decisions for the second per-sub-object design pass in Phase 2 Track B: (D1) orbital element representation in BodyState's orbital sub-object; (D2) TidalLockState representation; (D3) type relationship between body orbits and vessel orbits — reuse KeplerState or distinct type.
+**Decision:** Three locked decisions.
+
+**D1 — Orbital element representation: 6 classical elements (a, e, i, Ω, ω, ν₀) + EpochTick + ReferenceBodyId.** Field assignments per `docs/world/PROCGEN_DESIGN.md` "Orbital dynamics (commit 061)" section. Matches existing `KeplerState` orbital-identity field structure and `OrbitalElements.cs` canonical representation. CONSTRAINTS §6 Stage 3 enumerates only 3 of these 6 orbital elements (omits Ω, ω, ν₀); 061 implicitly overrides §6 Stage 3 with the full set per `OrbitalElements.cs` precedent. §6 itself is not amended at this commit — part of deferred pipeline-reconciliation work.
+
+**D2 — TidalLockState representation: boolean for Phase 2.** True if body is tidally locked to its parent (rotation period = orbital period); false otherwise. Richer representations (resonance ratio for Mercury-style 3:2 cases, libration phase, continuous tidal-evolution parameter) deferred — schema migrates when Phase 7 procgen demands them. Reasoning: Phase 2 home-system tidal cases are all 1:1 or none; player perception is binary; physical complexity doesn't affect Phase 2 gameplay.
+
+**D3 — Distinct `OrbitalDynamicsState` type, rather than reusing KeplerState.** Honest semantic separation between body orbits (stable, no event-prediction caches at this layer) and vessel orbits (mutable, with runtime caches). KeplerState carries 5 event-prediction caches (NextPeriapsisTick, NextApoapsisTick, NextSoiTransitionTick, NextAtmosphericEntryTick, NextSurfaceImpactTick) that fit vessel runtime concerns but not body schema. Math layer (`OrbitalElements.cs`) operates on raw doubles so it works for both types — no code duplication despite type duplication. NETCODE_CONTRACT §2.7's Phase-4-deferred field `orbital_state_around_parent: Option<KeplerState>` proposed reusing KeplerState; 061 overrides this in favor of the distinct type. §2.7 not amended at this commit — part of deferred reconciliation work.
+
+**Alternatives rejected:**
+
+- **State-vector representation (position + velocity at epoch) instead of classical elements (D1).** Used internally by some orbital-mechanics implementations. Rejected because `OrbitalElements.cs` and existing `KeplerState` use the classical 6-element representation as canonical; the conversion math goes state-vector → elements but the storage form is elements. Matching the precedent avoids forcing the math layer to support a second canonical form.
+- **Reduced element set per §6 Stage 3's literal enumeration (just a, e, i) (D1).** §6 Stage 3 omits Ω, ω, ν₀. Rejected because those three elements are required to uniquely specify an orbit in 3D — without them, the orbit's orientation in space and the body's position along it are undefined. §6 Stage 3's enumeration is incomplete (same pattern as §6 Stage 1); 061 overrides with the physically-required set.
+- **Resonance-ratio TidalLockState for Phase 2 (D2).** Captures Mercury's 3:2 case. Rejected as premature complexity — Phase 2 home-system tidal cases are all 1:1 or none. Schema-evolution path from boolean to richer representation is straightforward when actually needed.
+- **Continuous tidal-evolution parameter (D2).** Models tidal-locking as a continuous-physics process. Rejected as wildly out of scope for Phase 2 — and probably for v1 entirely.
+- **Reuse KeplerState for body orbital state (per NETCODE_CONTRACT §2.7's proposal) (D3).** Avoids type duplication. Rejected because KeplerState's 5 event-prediction cache fields don't fit body schema — they're vessel runtime concerns. Forcing every body to carry always-null caches plus the runtime-state semantic creates confusion at every read site. Honest type duplication for honest semantic separation is the cleaner choice.
+- **Compose KeplerState as a sub-field of OrbitalDynamicsState (D3).** `OrbitalDynamicsState { kepler: KeplerState; tidal_lock: bool; }`. Avoids field duplication but inherits KeplerState's event-prediction caches. Same problem as direct reuse; just wraps it. Rejected.
+- **Include event-prediction caches on OrbitalDynamicsState (D3-adjacent, mirroring KeplerState's pattern).** Body event prediction (eclipses, sibling-SOI crossings, etc.) could conceivably be useful. Rejected because (a) Phase 2 single-system patched-conics has no obvious use case for body event-prediction; (b) if it becomes useful later, a separate `OrbitalEventCache` sub-object is the right shape per schema-vs-code principle (caches are code/runtime, not schema/state); (c) including caches now would force population logic that doesn't exist yet.
+- **Anticipate binary-system handling at 061 (D3-adjacent).** Phase 7 binary stars and binary-asteroid systems will need orbital state relative to a barycenter rather than a single parent. Rejected as premature — Phase 2 single-star home system uses parent-relative orbits exclusively; Phase 7 invents the binary-system shape (synthetic-barycenter body, discriminator field, or other) when it's an actual concern. ReferenceBodyId pointing at parent is sufficient for now.
+
+**Rationale (lock the second sub-object design; match existing math layer; respect schema-vs-code split):** The three locked decisions advance Phase 2 Track B's per-sub-object pattern by landing orbital dynamics — the second sub-object after 060's stellar state. D1 matches existing `OrbitalElements.cs` and `KeplerState` precedent on the 6-element canonical representation. D2 chooses the simplest TidalLockState representation that handles Phase 2 cases; richer representations migrate when Phase 7 demands. D3 separates body orbital state from vessel orbital state with a distinct type, honoring schema-vs-code split (no event-prediction caches in schema; the OrbitalElements math operates on raw doubles so it works for both types). §6 Stage 3 and §2.7's KeplerState-reuse proposal are both overridden in this design but not amended — part of deferred pipeline / contract reconciliation.
+
+**Implication:** Subsequent commits (062+) design more sub-objects. Natural next candidates: atmospheric state (planets with atmospheres need this for the atmospheric flight model in Phase 3); or surface state (geology + terrain question — one sub-object or two, raised in 059's "Schema structure" section); or magnetosphere (relatively self-contained). Sub-object selection order is per-commit decision, not locked at 061. Findings A (RotationRate unit conversion at Stage 1 boundary) and B (AxialTilt gap in 058's Layer 3 inputs) carry forward — still documented in PROCGEN_DESIGN.md but not amended in 058. Phase 7 deferred work accumulates: binary-system handling, richer TidalLockState representation, §6 / §2.7 reconciliation.
+
+**Locked in:** commit 061.
+
+---
+
 ## Pending decisions (open questions still in `docs/CONSTRAINTS.md` §10)
 
 This section mirrors §10's open questions so a reader can find both resolved and pending decisions in one place. When an entry here lands a decision, it moves to "Resolved decisions" above and gets removed from this section.
