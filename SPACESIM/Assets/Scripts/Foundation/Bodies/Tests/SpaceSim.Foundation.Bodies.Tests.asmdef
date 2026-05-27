@@ -1,0 +1,14 @@
+{
+    "name": "SpaceSim.Foundation.Bodies.Tests",
+    "rootNamespace": "",
+    "references": ["SpaceSim.Foundation.Bodies"],
+    "includePlatforms": ["Editor"],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": ["nunit.framework.dll"],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

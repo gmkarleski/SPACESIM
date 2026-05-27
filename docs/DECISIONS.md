@@ -716,6 +716,32 @@ Decomposition rationale: usage clusters in downstream code (detection/flux reads
 
 ---
 
+### Phase 2 Track B first implementation — POCO sub-object classes + Sol-equivalent factory (commit 062)
+
+**Date:** 2026-05-26
+**Question:** Five implementation choices forced by translating the locked 060/061 sub-object designs into compilable C#: (D1) where new POCO classes live; (D2) concrete type for BodyState.Seed; (D3) class kind (class vs record); (D4) nullable sub-object declaration syntax; (D5) Sol-equivalent factory shape.
+**Decision:** Five locked decisions, all consistent with existing precedent or smallest-jump choices.
+
+**D1 — Foundation/Bodies/ as a new module sibling to Foundation/Vessels/.** New asmdef `SpaceSim.Foundation.Bodies.asmdef` plus Foundation/Bodies/Tests/ with own `SpaceSim.Foundation.Bodies.Tests.asmdef` (EditMode Form 2 per commit 032). New module is investment, not premature — more procgen code follows in subsequent commits.
+
+**D2 — `BodyState.Seed` is `ulong`.** Standard procgen seed type; 64-bit space comfortable for hierarchical derivation per Phase 7 Layers 1-4. Sol-equivalent uses fixed `0UL` as system anchor (deliberate fixed value, not absence-of-seed sentinel).
+
+**D3 — Class kind: `sealed class` for BodyState and all sub-objects.** Matches `VesselAuthoritativeState` precedent. `record` not introduced — would be a new type-system pattern beyond commit scope.
+
+**D4 — Nullable sub-object field syntax: no `?` annotation.** Matches `VesselAuthoritativeState.PhysXState` / `KeplerState` / `CruiseState` pattern. Project does not enable nullable-reference-types; nullability semantics live in doc-comments and design discipline.
+
+**D5 — Sol-equivalent factory: `public static class HomeSystemBodies` with `Sun(Guid bodyId = default)` method.** Anticipates sibling methods for the four intensive home-system bodies per CONSTRAINTS §3 commit 021. Production code (not test-helper) because Sol-equivalent is real production data; optional bodyId parameter for deterministic test scenarios.
+
+**Alternatives rejected:** Foundation/Vessels/ for new code (mixes vessel and body concerns); Foundation/World/ (docs/world/ is documentation, in-code World suggests rendering); `int`/`uint`/`Guid`/custom struct for Seed (each rejected as either too narrow, uncommon, conflating identity, or over-engineering); `record` instead of `sealed class` (new pattern); project-wide nullable-reference-types (broader change out of 062 scope); Sun-factory on BodyState as static method (mixes general data-class concerns with home-system-specific factory); Sun-factory test-helper-only (Sol-equivalent is production data eventually used at minimum-end-to-end render time).
+
+**Rationale (smallest-jump implementation; match existing patterns; surface design issues if any):** Five choices, all matching established Foundation/ precedent or selecting smallest-cost option. 062 translates 060/061 designs into working C# without introducing new patterns, broader project changes, or speculative architecture. Implementation surfaces design issues if any; subsequent commits adjust based on what emerges.
+
+**Implication:** Subsequent commits build on Foundation/Bodies/. 063+ designs and implements PlanetaryBulk (planet bulk parameters: composition class enum, age, internal heat), enabling Earth-equivalent factory. ReferenceBody-to-BodyState bridge lands when scene-time body rendering becomes load-bearing — Unity-side architecture decision (extend ReferenceBody, replace with new MonoBehaviour, or hold BodyState in a registry that ReferenceBody references by ID) deferred to that commit. Pipeline cascade orchestration lands when multi-body dependent stages need coordinating.
+
+**Locked in:** commit 062.
+
+---
+
 ## Pending decisions (open questions still in `docs/CONSTRAINTS.md` §10)
 
 This section mirrors §10's open questions so a reader can find both resolved and pending decisions in one place. When an entry here lands a decision, it moves to "Resolved decisions" above and gets removed from this section.
